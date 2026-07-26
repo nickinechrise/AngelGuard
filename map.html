@@ -1,0 +1,345 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>AngelGuard GIS Dashboard</title>
+    <!-- Firebase -->
+    <script src="https://www.gstatic.com/firebasejs/9.22.0/firebase-app-compat.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/9.22.0/firebase-database-compat.js"></script>
+
+    <!-- Leaflet -->
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+
+    <!-- Routing -->
+    <link rel="stylesheet" href="https://unpkg.com/leaflet-routing-machine@latest/dist/leaflet-routing-machine.css" />
+    <script src="https://unpkg.com/leaflet-routing-machine@latest/dist/leaflet-routing-machine.js"></script>
+
+    <!-- Polyline Decorator -->
+    <script src="https://unpkg.com/leaflet-polylinedecorator/dist/leaflet.polylinedecorator.js"></script>
+
+    <style>
+        :root {
+            --bg-terrain: #F4F3F0;
+            --route-blue: #4285F4;
+            --text-charcoal: #3C4043;
+            --alert-red: #EA4335;
+        }
+
+        html, body { height: 100%; margin: 0; padding: 0; font-family: 'Roboto', sans-serif; }
+
+        #map { height: 100vh; width: 100%; background-color: var(--bg-terrain); }
+
+        .ui-panel {
+            position: absolute; top: 20px; left: 20px; z-index: 1000;
+            background: white; padding: 16px; border-radius: 24px;
+            box-shadow: 0 4px 16px rgba(0,0,0,0.12);
+            border: 1px solid #dadce0; width: 280px;
+        }
+
+        h1 { margin: 0 0 6px 0; font-size: 20px; font-weight: 500; color: var(--text-charcoal); }
+
+        #status { font-size: 13px; color: #70757a; font-weight: 400; }
+
+        .google-metrics-row {
+            display: flex; justify-content: space-between; margin-top: 12px;
+            padding-top: 12px; border-top: 1px solid #dadce0; font-size: 14px;
+        }
+        .metric-box { font-weight: 600; color: #1a73e8; }
+        .eta-box { font-weight: 600; color: #188038; }
+
+        .recenter-btn {
+            position: absolute; bottom: 110px; right: 20px; z-index: 1000;
+            background: white; border: 1px solid #dadce0; width: 40px; height: 40px;
+            border-radius: 50%; box-shadow: 0 2px 6px rgba(0,0,0,0.3);
+            cursor: pointer; display: flex; align-items: center; justify-content: center;
+        }
+        .recenter-btn svg { width: 20px; height: 20px; fill: #5f6368; }
+        .recenter-btn:hover svg { fill: #1a73e8; }
+
+        .pulse-pin {
+            background: var(--alert-red); width: 20px; height: 20px;
+            border-radius: 50%; border: 3px solid #fff;
+            box-shadow: 0 0 0 rgba(234, 67, 53, 0.4); animation: pulse 1.5s infinite;
+        }
+        @keyframes pulse {
+            0% { box-shadow: 0 0 0 0 rgba(234, 67, 53, 0.7); }
+            70% { box-shadow: 0 0 0 16px rgba(234, 67, 53, 0); }
+            100% { box-shadow: 0 0 0 0 rgba(234, 67, 53, 0); }
+        }
+        .breadcrumb-dot {
+            background: #ffffff;
+            border-radius: 50%;
+            border: 2px solid #4285F4;
+        }
+
+        .map-label {
+            color: var(--text-charcoal);
+            text-shadow: -2px -2px 0 #fff, 2px -2px 0 #fff, -2px 2px 0 #fff, -2px 2px 0 #fff;
+            font-weight: 600; font-size: 12px;
+        }
+
+        .leaflet-popup-content-wrapper { border-radius: 12px !important; box-shadow: 0 4px 16px rgba(0,0,0,0.15) !important; padding: 4px; }
+        .leaflet-routing-container { display: none !important; }
+        .custom-tooltip { background: transparent !important; border: none !important; box-shadow: none !important; }
+
+        .nav-callout-tooltip { background: #111b15 !important; color: #4af2a1 !important; border: 1px solid #4af2a1 !important; border-radius: 6px !important; font-weight: bold !important; font-family: 'Roboto Mono', monospace !important; box-shadow: 0 0 10px rgba(74, 242, 161, 0.4) !important; font-size: 12px !important; padding: 4px 8px !important; }
+        .nav-callout-tooltip::before { border-top-color: #4af2a1 !important; }
+    </style>
+</head>
+<body>
+
+<div class="ui-panel">
+    <h1>AungelGuard Active</h1>
+    <div id="status">Standby Mode: Scanning Database...</div>
+    <div class="google-metrics-row">
+        <div>Distance: <span id="route-dist" class="metric-box">-- km</span></div>
+        <div>ETA: <span id="route-eta" class="eta-box">-- min</span></div>
+    </div>
+</div>
+
+<div class="recenter-btn" onclick="recenterOnGuardian()" title="Recenter View onto Guardian Mobile Unit">
+    <svg viewBox="0 0 24 24"><path d="M12 8c-2.21 0-4 1.79-4 4s1.79 4 4 4 4-1.79 4-4-1.79-4-4-4zm8.94 3c-.46-4.17-3.77-7.48-7.94-7.94V1h-2v2.06C6.83 3.52 3.52 6.83 3.06 11H1v2h2.06c.46 4.17 3.77 7.48 7.94 7.94V23h2v-2.06c4.17-.46 7.48-3.77 7.94-7.94H23v-2h-2.06zM12 19c-3.87 0-7-3.13-7-7s3.13-7 7-7 7 3.13 7 7-3.13 7-7 7z"/></svg>
+</div>
+
+<div id="map"></div>
+
+<script>
+    const firebaseConfig = {
+        apiKey: "AIzaSyC5Mz8W0PS9gaLZLQEaQ6rgDlPm4iBUUgY",
+        authDomain: "aungleguard.firebaseapp.com",
+        databaseURL: "https://aungleguard-default-rtdb.firebaseio.com",
+        projectId: "aungleguard",
+        storageBucket: "aungleguard.appspot.com",
+        messagingSenderId: "537358011410",
+        appId: "1:537358011410:android:708da3305731d32661dccb"
+    };
+    firebase.initializeApp(firebaseConfig);
+
+
+    let map, vMarker, gMarker, routingControl, decorator, isActive = false;
+    let guardianPos = [13.0827, 80.2707];
+    let guardianRef = null, midRouteMarkers = [], guardianHistoryTrail = null, historicalCoordinates = [];
+    let watchId = null; // ADDED: track live browser geolocation watch handle
+
+    function animateMarker(marker, targetLatLng, duration) {
+        if (!marker) return;
+        const startLatLng = marker.getLatLng();
+        const startTime = performance.now();
+        function frame(currentTime) {
+            const elapsed = currentTime - startTime;
+            const progress = Math.min(elapsed / duration, 1);
+            marker.setLatLng([startLatLng.lat + (targetLatLng[0] - startLatLng.lat) * progress, startLatLng.lng + (targetLatLng[1] - startLatLng.lng) * progress]);
+            if (progress < 1) requestAnimationFrame(frame);
+        }
+        requestAnimationFrame(frame);
+    }
+// Updated Tile Definitions to use Google Maps vector tiles
+const street = L.tileLayer('https://mt1.google.com/vt/lyrs=m&x={x}&y={y}&z={z}', {
+    maxZoom: 20, attribution: '© Google Maps'
+});
+
+const satellite = L.tileLayer('https://mt1.google.com/vt/lyrs=s,h&x={x}&y={y}&z={z}', {
+    maxZoom: 20, attribution: '© Google Maps'
+});
+
+const traffic = L.tileLayer('https://mt1.google.com/vt/lyrs=m@221097413,traffic&x={x}&y={y}&z={z}', {
+    maxZoom: 20, attribution: '© Google Maps'
+});
+
+function initMap(vLat, vLng, gLat, gLng) {
+        if (map) return;
+        map = L.map('map', {
+        center: [gLat, gLng],
+        zoom: 15,
+        layers: [street], // Default layer
+        zoomControl: false
+    });
+
+    // Define the base layers for the selector
+    const basemapsMatrix = {
+        "Street View": street,
+        "Satellite View": satellite,
+        "Traffic View": traffic
+    };
+
+    // Add the selector to the top-right
+    L.control.layers(basemapsMatrix, null, { position: 'topright' }).addTo(map);
+    L.control.zoom({ position: 'bottomright' }).addTo(map);
+        gMarker = L.marker([vLat, vLng], {icon: L.divIcon({className: 'pulse-pin'})}).addTo(map).bindTooltip('<span class="map-label">Guardian</span>', { permanent: true, direction: 'top', className: 'custom-tooltip' });
+        vMarker = L.marker([gLat, gLng], {icon: L.divIcon({className: 'pulse-pin'})}).addTo(map).bindTooltip('<span class="map-label">Victim</span>', { permanent: true, direction: 'top', className: 'custom-tooltip' });
+
+        routingControl = L.Routing.control({
+            waypoints: [L.latLng(gLat, gLng), L.latLng(vLat, vLng)],
+            router: L.Routing.osrmv1({ serviceUrl: 'https://router.project-osrm.org/route/v1' }),
+            lineOptions: { styles: [{ color: '#4285F4', opacity: 0.85, weight: 6 }] },
+            addWaypoints: false, draggableWaypoints: false, fitSelectedRoutes: false
+        }).addTo(map);
+
+        routingControl.on('routesfound', function(e) {
+            const routes = e.routes;
+            const summary = routes[0].summary;
+            document.getElementById('route-dist').innerText = `${(summary.totalDistance / 1000).toFixed(1)} km`;
+            document.getElementById('route-eta').innerText = `${Math.round(summary.totalTime / 60)} min`;
+            document.getElementById('status').innerText = "Intercept Path Active";
+
+            if (decorator) map.removeLayer(decorator);
+            decorator = L.polylineDecorator(L.polyline(routes[0].coordinates), {
+                patterns: [{ offset: '5%', repeat: '40px', symbol: L.Symbol.arrowHead({ pixelSize: 8, polygon: false, pathOptions: { stroke: true, color: '#ffffff', weight: 2 } }) }]
+            }).addTo(map);
+
+            midRouteMarkers.forEach(m => map.removeLayer(m));
+            midRouteMarkers = [];
+
+            if (routes[0].coordinates.length > 10) {
+                const idx1 = Math.floor(routes[0].coordinates.length * 0.33);
+                const idx2 = Math.floor(routes[0].coordinates.length * 0.66);
+                [idx1, idx2].forEach((i, count) => {
+                    let m = L.circleMarker([routes[0].coordinates[i].lat, routes[0].coordinates[i].lng], {
+                        radius: 5, color: '#ffffff', fillColor: '#4af2a1', fillOpacity: 1, weight: 2
+                    })
+                    .addTo(map)
+                    .bindTooltip(`${Math.round((summary.totalTime * (count === 0 ? 0.33 : 0.66)) / 60)} mins`, {
+                        permanent: true, direction: 'right', className: 'nav-callout-tooltip'
+                    });
+                    midRouteMarkers.push(m);
+                });
+            }
+            map.fitBounds(L.latLngBounds([vMarker.getLatLng(), gMarker.getLatLng()]), { padding: [50, 50] });
+        });
+    }
+
+    function recenterOnGuardian() { if (gMarker) map.setView(gMarker.getLatLng(), 16); }
+
+    // UPDATED: Request guardian live browser location permission to start dynamic navigation from guardian to victim with high frequency smooth movement loops
+    function initGuardianLiveGeolocation() {
+        if ("geolocation" in navigator) {
+            document.getElementById('status').innerText = "Requesting Guardian GPS Permission...";
+            watchId = navigator.geolocation.watchPosition(
+                (position) => {
+                    const newPos = [position.coords.latitude, position.coords.longitude];
+                    guardianPos = newPos;
+                    if (historicalCoordinates.length === 0 || historicalCoordinates[historicalCoordinates.length - 1][0] !== newPos[0]) {
+                        historicalCoordinates.push(newPos);
+                        L.marker(newPos, { icon: L.divIcon({ className: 'breadcrumb-dot', iconSize: [10, 10], iconAnchor: [5, 5] }) }).addTo(map);
+                    }
+                    if (guardianHistoryTrail) guardianHistoryTrail.setLatLngs(historicalCoordinates);
+                    else guardianHistoryTrail = L.polyline(historicalCoordinates, { color: '#ffffff', weight: 4, opacity: 0.8, dashArray: '6, 8', lineCap: 'round' }).addTo(map);
+
+                    if (gMarker) {
+                        animateMarker(gMarker, guardianPos, 1000);
+                        if (isActive && vMarker && routingControl) {
+                            routingControl.setWaypoints([L.latLng(guardianPos[0], guardianPos[1]), vMarker.getLatLng()]);
+                        }
+                    }
+                },
+                (error) => {
+                    console.warn("Geolocation permission denied or unavailable, falling back to database sync.", error);
+                    document.getElementById('status').innerText = "Fallback: Syncing Guardian Position...";
+                    setupDatabaseGuardianFallback();
+                },
+                { enableHighAccuracy: true, maximumAge: 1000, timeout: 5000 }
+            );
+        } else {
+            setupDatabaseGuardianFallback();
+        }
+    }
+
+    function setupDatabaseGuardianFallback() {
+        firebase.database().ref('settings/active_guardian_id').on('value', (snap) => {
+            const activeId = snap.val();
+            if (guardianRef) guardianRef.off();
+            if (activeId) {
+                guardianRef = firebase.database().ref('guardians/' + activeId);
+                guardianRef.on('value', (gSnap) => {
+                    const g = gSnap.val();
+                    if (g && g.lat && g.lng) {
+                        const newPos = [parseFloat(g.lat), parseFloat(g.lng)];
+                        if (isNaN(newPos[0]) || newPos[0] === 0) return;
+                        guardianPos = newPos;
+                        if (historicalCoordinates.length === 0 || historicalCoordinates[historicalCoordinates.length - 1][0] !== newPos[0]) {
+                            historicalCoordinates.push(newPos);
+                            L.marker(newPos, { icon: L.divIcon({ className: 'breadcrumb-dot', iconSize: [10, 10], iconAnchor: [5, 5] }) }).addTo(map);
+                        }
+                        if (guardianHistoryTrail) guardianHistoryTrail.setLatLngs(historicalCoordinates);
+                        else guardianHistoryTrail = L.polyline(historicalCoordinates, { color: '#ffffff', weight: 4, opacity: 0.8, dashArray: '6, 8', lineCap: 'round' }).addTo(map);
+                        if (gMarker) {
+                            animateMarker(gMarker, guardianPos, 1000);
+                            if (isActive && vMarker && routingControl) routingControl.setWaypoints([L.latLng(guardianPos[0], guardianPos[1]), vMarker.getLatLng()]);
+                        }
+                    }
+                });
+            }
+        });
+    }
+
+    // Inside your map.html script, make sure this listens to the dynamic ID
+function startTrackingGuardian(guardianId) {
+    firebase.database().ref('guardians/' + guardianId).on('value', (snap) => {
+        const data = snap.val();
+        if (data) {
+            const newPos = [data.lat, data.lng];
+            animateMarker(gMarker, newPos, 1000);
+            routingControl.setWaypoints([L.latLng(newPos[0], newPos[1]), vMarker.getLatLng()]);
+        }
+    });
+}
+    firebase.database().ref('emergencies').on('value', (snapshot) => {
+        snapshot.forEach((child) => {
+            const d = child.val();
+            if (d && d.victim_toggle_tile === true) {
+                const vPos = [parseFloat(d.lat), parseFloat(d.lng)];
+                if (isNaN(vPos[0]) || vPos[0] === 0) return;
+                if (!isActive) {
+                    isActive = true;
+                    initMap(vPos[0], vPos[1], guardianPos[0], guardianPos[1]);
+                    initGuardianLiveGeolocation(); // Trigger location request on map activation
+                } else if (vMarker) {
+                    animateMarker(vMarker, vPos, 1000);
+                    if (routingControl) {
+                        const distanceCheck = L.latLng(guardianPos[0], guardianPos[1]).distanceTo(L.latLng(vPos[0], vPos[1]));
+                        if (distanceCheck > 100000) map.setView([guardianPos[0], guardianPos[1]], 14);
+                        else routingControl.setWaypoints([L.latLng(guardianPos[0], guardianPos[1]), L.latLng(vPos[0], vPos[1])]);
+                    }
+                }
+            }
+        });
+    });
+
+    // 1. Extract the emergency ID dynamically from the URL query parameters (e.g., map.html?id=xxx)
+const urlParams = new URLSearchParams(window.location.search);
+const activeEmergencyId = urlParams.get('id');
+
+// 2. Listen to changes on that exact emergency session if an ID exists
+if (activeEmergencyId) {
+    firebase.database().ref('emergencies/' + activeEmergencyId).on('value', (snapshot) => {
+        const data = snapshot.val();
+
+        if (!data) return;
+
+        // Check if the victim stopped the sharing via PIN
+        if (data.sharing_active === false || data.termination_source === "APP_SECURE_PIN") {
+            // Show the popup message to the guardian
+            alert("The location was terminated by the victim.");
+
+            // Clear the map and display resolution message so the link no longer works
+            document.body.innerHTML = `
+                <div style="display: flex; justify-content: center; align-items: center; height: 100vh; font-family: sans-serif; text-align: center; background-color: #f8f9fa;">
+                    <div>
+                        <h2 style="color: #3B3B98;">Emergency Alert Resolved</h2>
+                        <p>This live location tracking session has been securely stopped by the victim.</p>
+                    </div>
+                </div>
+            `;
+            return;
+        }
+    });
+}
+
+    window.onload = function() {
+        initMap(13.0827, 80.2707, 13.0827, 80.2707);
+        initGuardianLiveGeolocation(); // Also request location permission right away upon page load
+    };
+</script>
+</body>
+</html>
