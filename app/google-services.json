@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "537358011410",
+    "project_id": "aungleguard",
+    "storage_bucket": "aungleguard.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:537358011410:android:708da3305731d32661dccb",
+        "android_client_info": {
+          "package_name": "com.example.angelguard"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyAKUTHZeUbzmXo9dSQ2SKToKL4XObrHdvQ"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

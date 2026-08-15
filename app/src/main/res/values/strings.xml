@@ -1,0 +1,4 @@
+<resources>
+    <string name="app_name">AngelGuard</string>
+    <string name="accessibility_service_description">Used to detect emergency SOS triggers.</string>
+</resources>

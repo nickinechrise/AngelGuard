@@ -1,0 +1,42 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>AngelGuard: Proceed to Location</title>
+    <script src="https://www.gstatic.com/firebasejs/9.22.0/firebase-app-compat.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/9.22.0/firebase-database-compat.js"></script>
+    <style>
+        body { font-family: sans-serif; text-align: center; padding: 50px; background: #f0f2f5; }
+        .box { background: white; padding: 20px; border-radius: 20px; box-shadow: 0 4px 10px rgba(0,0,0,0.1); }
+        h2 { color: #1a73e8; }
+    </style>
+</head>
+<body>
+<div class="box">
+    <h2>AngelGuard Active</h2>
+    <p id="status">Connecting to GPS... Please allow location access.</p>
+</div>
+
+<script>
+    const firebaseConfig = { /* USE YOUR SAME CONFIG HERE */ };
+    firebase.initializeApp(firebaseConfig);
+
+    // Use a dynamic ID from the URL (e.g., guardian.html?id=123)
+    const urlParams = new URLSearchParams(window.location.search);
+    const guardianId = urlParams.get('id') || "default_guardian";
+    const guardianRef = firebase.database().ref('guardians/' + guardianId);
+
+    if (navigator.geolocation) {
+        navigator.geolocation.watchPosition((pos) => {
+            guardianRef.update({
+                lat: pos.coords.latitude,
+                lng: pos.coords.longitude,
+                lastSeen: firebase.database.ServerValue.TIMESTAMP
+            });
+            document.getElementById('status').innerText = "Tracking Active. You are moving toward the victim.";
+        }, (err) => {
+            document.getElementById('status').innerText = "Error: Please enable location permissions.";
+        }, { enableHighAccuracy: true });
+    }
+</script>
+</body>
+</html>

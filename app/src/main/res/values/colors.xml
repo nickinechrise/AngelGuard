@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Background: Very soft, pale rose-tinted off-white -->
+    <color name="background_app">#FFF5F5</color>
+
+    <!-- Primary: Elegant Blush Rose for buttons and accents -->
+    <color name="primary_accent">#D49A9A</color>
+
+    <!-- Text: Deep, warm brownish-grey for high readability -->
+    <color name="text_main">#4A3D3D</color>
+
+    <!-- Cards: Pure white to keep the UI clean -->
+    <color name="card_bg">#FFFFFF</color>
+</resources>

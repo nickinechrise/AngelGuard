@@ -1,0 +1,277 @@
+<?xml version="1.0" encoding="utf-8"?>
+
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:orientation="vertical"
+    android:background="#080B12"
+    android:paddingStart="16dp"
+    android:paddingEnd="16dp">
+
+    <!-- ===================================================== -->
+    <!-- TOP BAR -->
+    <!-- ===================================================== -->
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="58dp"
+        android:gravity="center_vertical"
+        android:orientation="horizontal">
+
+        <!-- BACK BUTTON -->
+
+        <ImageButton
+            android:id="@+id/btnBack"
+            android:layout_width="48dp"
+            android:layout_height="48dp"
+            android:background="@android:color/transparent"
+            android:contentDescription="Back"
+            android:padding="10dp"
+            android:src="@android:drawable/ic_media_previous"
+            app:tint="#FFFFFF" />
+
+        <!-- TITLE -->
+
+        <LinearLayout
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:orientation="vertical"
+            android:paddingStart="8dp">
+
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="AngelGuard"
+                android:textColor="#FFFFFF"
+                android:textSize="21sp"
+                android:textStyle="bold" />
+
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="2dp"
+                android:text="AI Voice Guardian"
+                android:textColor="#8D96AA"
+                android:textSize="12sp" />
+
+        </LinearLayout>
+
+        <!-- ONLINE INDICATOR -->
+
+        <LinearLayout
+            android:layout_width="wrap_content"
+            android:layout_height="36dp"
+            android:background="#14261D"
+            android:gravity="center_vertical"
+            android:orientation="horizontal"
+            android:paddingStart="12dp"
+            android:paddingEnd="12dp">
+
+            <View
+                android:layout_width="8dp"
+                android:layout_height="8dp"
+                android:background="#38D996" />
+
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginStart="7dp"
+                android:text="ONLINE"
+                android:textColor="#54E5A3"
+                android:textSize="10sp"
+                android:textStyle="bold" />
+
+        </LinearLayout>
+
+    </LinearLayout>
+
+
+    <!-- ===================================================== -->
+    <!-- GREETING -->
+    <!-- ===================================================== -->
+
+    <TextView
+        android:id="@+id/tvGreeting"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="22dp"
+        android:gravity="center"
+        android:text="Hi, I'm AngelGuard"
+        android:textColor="#FFFFFF"
+        android:textSize="28sp"
+        android:textStyle="bold" />
+
+
+    <!-- ===================================================== -->
+    <!-- STATUS -->
+    <!-- ===================================================== -->
+
+    <TextView
+        android:id="@+id/tvStatus"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="7dp"
+        android:gravity="center"
+        android:text="I'm listening..."
+        android:textColor="#8994AA"
+        android:textSize="15sp" />
+
+
+    <!-- ===================================================== -->
+    <!-- AI ORB AREA -->
+    <!-- ===================================================== -->
+
+    <FrameLayout
+        android:layout_width="match_parent"
+        android:layout_height="0dp"
+        android:layout_weight="1"
+        android:minHeight="250dp">
+
+        <!-- OUTER GLOW -->
+
+        <View
+            android:id="@+id/orbGlow1"
+            android:layout_width="250dp"
+            android:layout_height="250dp"
+            android:layout_gravity="center"
+            android:alpha="0.35"
+            android:background="@drawable/voice_orb_outer" />
+
+        <!-- SECOND GLOW -->
+
+        <View
+            android:id="@+id/orbGlow2"
+            android:layout_width="205dp"
+            android:layout_height="205dp"
+            android:layout_gravity="center"
+            android:alpha="0.55"
+            android:background="@drawable/voice_orb_middle" />
+
+        <!-- MAIN AI ORB -->
+
+        <ImageView
+            android:id="@+id/aiOrb"
+            android:layout_width="155dp"
+            android:layout_height="155dp"
+            android:layout_gravity="center"
+            android:background="@drawable/voice_orb"
+            android:contentDescription="AngelGuard AI"
+            android:padding="30dp"
+            android:src="@android:drawable/ic_btn_speak_now"
+            app:tint="#FFFFFF" />
+
+    </FrameLayout>
+
+
+    <!-- ===================================================== -->
+    <!-- CONVERSATION -->
+    <!-- ===================================================== -->
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginBottom="12dp"
+        android:background="#101522"
+        android:orientation="vertical"
+        android:padding="16dp">
+
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="CONVERSATION"
+            android:textColor="#69748A"
+            android:textSize="10sp"
+            android:textStyle="bold" />
+
+        <TextView
+            android:id="@+id/tvConversation"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="7dp"
+            android:maxLines="4"
+            android:text="Say something like &quot;AngelGuard, I need help.&quot;"
+            android:textColor="#E9EDF5"
+            android:textSize="15sp" />
+
+    </LinearLayout>
+
+
+    <!-- ===================================================== -->
+    <!-- HINT -->
+    <!-- ===================================================== -->
+
+    <TextView
+        android:id="@+id/tvHint"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginBottom="14dp"
+        android:gravity="center"
+        android:text="Your voice is processed by AngelGuard AI"
+        android:textColor="#69748A"
+        android:textSize="12sp" />
+
+
+    <!-- ===================================================== -->
+    <!-- EMERGENCY STATUS -->
+    <!-- ===================================================== -->
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:background="@drawable/emergency_status_bg"
+        android:gravity="center_vertical"
+        android:minHeight="58dp"
+        android:orientation="horizontal"
+        android:paddingStart="15dp"
+        android:paddingTop="10dp"
+        android:paddingEnd="15dp"
+        android:paddingBottom="10dp">
+
+        <!-- INDICATOR -->
+
+        <View
+            android:id="@+id/emergencyIndicator"
+            android:layout_width="11dp"
+            android:layout_height="11dp"
+            android:background="@drawable/emergency_indicator" />
+
+        <TextView
+            android:id="@+id/tvEmergencyStatus"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_marginStart="12dp"
+            android:layout_weight="1"
+            android:text="Emergency protection is ready"
+            android:textColor="#F1F3F7"
+            android:textSize="13sp"
+            android:textStyle="bold" />
+
+    </LinearLayout>
+
+
+    <!-- ===================================================== -->
+    <!-- MICROPHONE -->
+    <!-- ===================================================== -->
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="100dp"
+        android:gravity="center"
+        android:orientation="vertical">
+
+        <ImageButton
+            android:id="@+id/btnMicrophone"
+            android:layout_width="72dp"
+            android:layout_height="72dp"
+            android:background="@drawable/microphone_button"
+            android:contentDescription="Microphone"
+            android:elevation="10dp"
+            android:padding="20dp"
+            android:src="@android:drawable/ic_btn_speak_now"
+            app:tint="#FFFFFF" />
+
+    </LinearLayout>
+
+</LinearLayout>
