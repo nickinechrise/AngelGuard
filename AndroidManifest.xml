@@ -1,0 +1,251 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <!-- ========================= -->
+    <!-- HARDWARE FEATURES -->
+    <!-- ========================= -->
+
+    <uses-feature
+        android:name="android.hardware.telephony"
+        android:required="false" />
+
+    <uses-feature
+        android:name="android.hardware.microphone"
+        android:required="false" />
+
+
+    <!-- ========================= -->
+    <!-- PERMISSIONS -->
+    <!-- ========================= -->
+
+    <!-- SMS -->
+    <uses-permission android:name="android.permission.SEND_SMS" />
+
+    <!-- Notifications -->
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+
+    <!-- Location -->
+    <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
+    <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
+    <uses-permission android:name="android.permission.ACCESS_BACKGROUND_LOCATION" />
+
+    <!-- Foreground Services -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+
+    <!-- Location Foreground Service -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_LOCATION" />
+
+    <!-- Special Use Foreground Service -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
+
+    <!-- Microphone Foreground Service -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MICROPHONE" />
+
+    <!-- Contacts -->
+    <uses-permission android:name="android.permission.READ_CONTACTS" />
+
+    <!-- Microphone -->
+    <uses-permission android:name="android.permission.RECORD_AUDIO" />
+
+    <!-- Storage -->
+    <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE" />
+
+    <!-- Vibration -->
+    <uses-permission android:name="android.permission.VIBRATE" />
+
+    <!-- Internet -->
+    <uses-permission android:name="android.permission.INTERNET" />
+
+    <!-- Phone Call -->
+    <uses-permission android:name="android.permission.CALL_PHONE" />
+
+
+    <!-- ========================= -->
+    <!-- APPLICATION -->
+    <!-- ========================= -->
+
+    <application
+        android:name=".MyApplication"
+        android:allowBackup="true"
+        android:enableOnBackInvokedCallback="true"
+        android:icon="@mipmap/ic_launcher"
+        android:label="AngelGuard"
+        android:roundIcon="@mipmap/ic_launcher_round"
+        android:supportsRtl="true"
+        android:theme="@style/Theme.AppCompat.Light.DarkActionBar">
+
+
+        <!-- ========================= -->
+        <!-- MAIN ACTIVITY -->
+        <!-- ========================= -->
+
+        <activity
+            android:name=".MainActivity"
+            android:exported="true"
+            android:windowSoftInputMode="adjustPan">
+
+            <intent-filter>
+
+                <action android:name="android.intent.action.MAIN" />
+
+                <category android:name="android.intent.category.LAUNCHER" />
+
+            </intent-filter>
+
+
+            <!-- Deep Link for Audio -->
+            <intent-filter android:autoVerify="true">
+
+                <action android:name="android.intent.action.VIEW" />
+
+                <category android:name="android.intent.category.DEFAULT" />
+
+                <category android:name="android.intent.category.BROWSABLE" />
+
+                <data
+                    android:scheme="https"
+                    android:host="angelguard.com"
+                    android:pathPrefix="/audio" />
+
+            </intent-filter>
+
+        </activity>
+
+
+        <!-- ========================= -->
+        <!-- CALL TRAMPOLINE ACTIVITY -->
+        <!-- ========================= -->
+
+        <activity
+            android:name=".CallTrampolineActivity"
+            android:theme="@android:style/Theme.NoDisplay"
+            android:excludeFromRecents="true"
+            android:noHistory="true"
+            android:exported="false" />
+
+
+        <!-- ========================= -->
+        <!-- QUICK SETTINGS TILE -->
+        <!-- ========================= -->
+
+        <service
+            android:name=".SafetyTileService"
+            android:icon="@mipmap/ic_launcher"
+            android:label="EMERGENCY ALERT"
+            android:permission="android.permission.BIND_QUICK_SETTINGS_TILE"
+            android:exported="true">
+
+            <intent-filter>
+
+                <action
+                    android:name="android.service.quicksettings.action.QS_TILE" />
+
+            </intent-filter>
+
+        </service>
+
+
+        <!-- ========================= -->
+        <!-- BATTERY MONITORING SERVICE -->
+        <!-- ========================= -->
+
+        <service
+            android:name=".BatteryService"
+            android:enabled="true"
+            android:exported="false"
+            android:foregroundServiceType="specialUse">
+
+            <property
+                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                android:value="Monitoring system state for emergency detection" />
+
+        </service>
+
+
+        <!-- ========================= -->
+        <!-- SOS ACCESSIBILITY SERVICE -->
+        <!-- ========================= -->
+
+        <service
+            android:name=".SOSAccessibilityService"
+            android:permission="android.permission.BIND_ACCESSIBILITY_SERVICE"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.accessibilityservice.AccessibilityService" />
+            </intent-filter>
+            <meta-data
+                android:name="android.accessibilityservice"
+                android:resource="@xml/accessibility_service_config" />
+        </service>
+
+        <!-- ========================= -->
+        <!-- POWER BUTTON RECEIVER -->
+        <!-- ========================= -->
+
+        <receiver
+            android:name=".PowerButtonReceiver"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="com.example.angelguard.THREE_POWER_PRESSES" />
+            </intent-filter>
+        </receiver>
+
+        <!-- ========================= -->
+        <!-- AUDIO STREAM SERVICE -->
+        <!-- ONLY KEEP THIS IF YOU ARE USING -->
+        <!-- AudioStreamService.kt -->
+        <!-- ========================= -->
+
+        <service
+            android:name=".AudioRecordingService"
+            android:enabled="true"
+            android:exported="false"
+            android:foregroundServiceType="microphone" />
+
+
+        <!-- ========================= -->
+        <!-- PERMISSION DISCLOSURE -->
+        <!-- ========================= -->
+
+        <activity
+            android:name=".PermissionDisclosureActivity"
+            android:exported="false" />
+
+
+        <!-- ========================= -->
+        <!-- FILE PROVIDER -->
+        <!-- ========================= -->
+
+        <provider
+            android:name="androidx.core.content.FileProvider"
+            android:authorities="${applicationId}.provider"
+            android:exported="false"
+            android:grantUriPermissions="true">
+
+            <meta-data
+                android:name="android.support.FILE_PROVIDER_PATHS"
+                android:resource="@xml/file_paths" />
+
+        </provider>
+
+
+        <!-- ========================= -->
+        <!-- GOOGLE MAPS API KEY -->
+        <!-- ========================= -->
+
+        <meta-data
+            android:name="com.google.android.geo.API_KEY"
+            android:value="AIzaSyC5Mz8W0PS9gaLZLQEaQ6rgDlPm4iBUUgY" />
+
+
+        <!-- ========================= -->
+        <!-- GOOGLE MAPS MAP ID -->
+        <!-- ========================= -->
+
+        <meta-data
+            android:name="com.google.android.geo.MAP_ID"
+            android:value="21f5d3832885d9535d9eb4eb" />
+
+    </application>
+
+</manifest>
