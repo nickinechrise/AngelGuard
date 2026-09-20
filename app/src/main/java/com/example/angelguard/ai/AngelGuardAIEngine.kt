@@ -2,6 +2,7 @@ package com.example.angelguard.ai
 
 import android.content.Context
 import android.content.Intent
+import android.os.Build
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
@@ -19,16 +20,15 @@ import kotlinx.coroutines.cancel
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
-import okhttp3.MediaType.Companion.toMediaType
-import okhttp3.OkHttpClient
-import okhttp3.Request
-import okhttp3.RequestBody.Companion.toRequestBody
-
 import org.json.JSONArray
 import org.json.JSONObject
 
+import java.io.BufferedReader
+import java.io.InputStreamReader
+import java.net.HttpURLConnection
+import java.net.URL
+import java.nio.charset.StandardCharsets
 import java.util.Locale
-import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.math.max
 import kotlin.math.min
@@ -60,39 +60,39 @@ class AngelGuardAIEngine(
         /*
          * IMPORTANT:
          *
-         * Do NOT commit a real API key into your APK.
-         *
-         * Put your new rotated key in a secure configuration
-         * such as BuildConfig or your backend.
+         * Put your real rotated key here or, preferably,
+         * load it from BuildConfig / secure backend.
          */
         private const val GROQ_API_KEY =
-            "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"
+            "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"
+
+        // =====================================================
+        // MULTILINGUAL SPEECH
+        // =====================================================
+
+        private const val DEFAULT_SPEECH_LANGUAGE = "en-IN"
+        private const val TAMIL_LANGUAGE = "ta-IN"
+        private const val TELUGU_LANGUAGE = "te-IN"
+        private const val MALAYALAM_LANGUAGE = "ml-IN"
+        private const val HINDI_LANGUAGE = "hi-IN"
+        private const val KANNADA_LANGUAGE = "kn-IN"
 
         // =====================================================
         // TIMINGS
         // =====================================================
 
         private const val LISTEN_DELAY = 500L
-
         private const val ERROR_RESTART_DELAY = 1200L
-
         private const val RECREATE_DELAY = 700L
-
         private const val CONVERSATION_TIMEOUT = 30000L
 
-        private const val MAX_AI_TOKENS = 250
+        private const val MAX_AI_TOKENS = 1024
 
-        /*
-         * How close a word needs to be to "angelguard".
-         *
-         * 0.0 = completely different
-         * 1.0 = exactly the same
-         */
+        // =====================================================
+        // WAKE WORD
+        // =====================================================
+
         private const val WAKE_SIMILARITY_THRESHOLD = 0.68
-
-        /*
-         * Minimum length before fuzzy matching is attempted.
-         */
         private const val MIN_FUZZY_WORD_LENGTH = 4
 
         // =====================================================
@@ -100,20 +100,37 @@ class AngelGuardAIEngine(
         // =====================================================
 
         private const val ERROR_NO_MATCH = 7
-
         private const val ERROR_SPEECH_TIMEOUT = 6
     }
 
     // =========================================================
-    // SPEECH RECOGNIZER
+    // WAKE-WORD SPEECH RECOGNIZER
     // =========================================================
 
+    /*
+     * IMPORTANT:
+     *
+     * SpeechRecognizer is now primarily used for:
+     *
+     *     "Hey AngelGuard"
+     *
+     * It is NOT the main active-conversation STT anymore.
+     *
+     * Active conversation uses WhisperConversationRecorder.
+     */
     private var speechRecognizer: SpeechRecognizer? = null
 
     private lateinit var recognitionIntent: Intent
 
     private val isListening =
         AtomicBoolean(false)
+
+    // =========================================================
+    // WHISPER CONVERSATION RECORDER
+    // =========================================================
+
+    private var whisperRecorder:
+            WhisperConversationRecorder? = null
 
     // =========================================================
     // TEXT TO SPEECH
@@ -123,6 +140,33 @@ class AngelGuardAIEngine(
 
     @Volatile
     private var ttsReady = false
+
+    @Volatile
+    private var detectedSpeechLanguage =
+        DEFAULT_SPEECH_LANGUAGE
+
+    /*
+     * Explicit user-selected language.
+     *
+     * Example:
+     *
+     * "Talk to me in Tamil"
+     *
+     * Then AngelGuard continues replying in Tamil until
+     * the user explicitly changes the language.
+     */
+    @Volatile
+    private var preferredResponseLanguage: String? = null
+
+    private val supportedConversationLanguages =
+        arrayListOf(
+            "en-IN",
+            "ta-IN",
+            "te-IN",
+            "ml-IN",
+            "hi-IN",
+            "kn-IN"
+        )
 
     @Volatile
     private var isSpeaking = false
@@ -162,6 +206,14 @@ class AngelGuardAIEngine(
     private var restartPending = false
 
     // =========================================================
+    // WAKE WORD FAILURE FEEDBACK
+    // =========================================================
+
+    private var wakeWordFailureCount = 0
+
+    private val wakeWordFailurePromptThreshold = 2
+
+    // =========================================================
     // AI SCOPE
     // =========================================================
 
@@ -171,24 +223,11 @@ class AngelGuardAIEngine(
         )
 
     // =========================================================
-    // HTTP CLIENT
+    // HTTP SETTINGS
     // =========================================================
 
-    private val client =
-        OkHttpClient.Builder()
-            .connectTimeout(
-                15,
-                TimeUnit.SECONDS
-            )
-            .readTimeout(
-                30,
-                TimeUnit.SECONDS
-            )
-            .writeTimeout(
-                15,
-                TimeUnit.SECONDS
-            )
-            .build()
+    private val connectTimeoutMs = 15_000
+    private val readTimeoutMs = 30_000
 
     // =========================================================
     // SYSTEM PROMPT
@@ -199,26 +238,95 @@ class AngelGuardAIEngine(
 
         Your primary purpose is helping the user stay safe.
 
-        Respond naturally and briefly because your responses
-        will be spoken aloud.
+        Respond naturally, briefly and conversationally because
+        your responses will be spoken aloud.
 
-        You can understand:
+        You can understand and respond in:
+
         - English
         - Tamil
         - Tanglish
-        - Mixed English and Tamil
+        - Telugu
+        - Malayalam
+        - Hindi
+        - Kannada
+        - Mixed-language speech
 
-        Respond in the same language or style used by the user.
+        =====================================================
+        TANGlish RULE
+        =====================================================
 
-        Be calm, friendly, supportive and concise.
+        Tanglish means Tamil spoken naturally but written using
+        English letters.
 
-        IMPORTANT EMERGENCY RULE:
+        Examples:
 
-        If the user's CURRENT message clearly indicates
-        immediate danger, active physical threat, assault,
-        kidnapping, someone following them, someone threatening
-        them, or an urgent request for rescue, your response
-        MUST begin with:
+        "Enakku bayama irukku"
+        "Enna yaarum follow panraanga"
+        "Avan kathiya eduthuttu varaan"
+
+        Treat this as Tamil conversational speech.
+
+        DO NOT interpret Tanglish literally as English.
+
+        Understand the intended Tamil meaning.
+
+        If the user is speaking Tanglish, reply naturally in
+        Tanglish unless the user explicitly asks for Tamil script.
+
+        =====================================================
+        LANGUAGE RULE
+        =====================================================
+
+        Always reply in the language/style appropriate for the
+        CURRENT conversation.
+
+        Tamil script:
+        Reply in Tamil script.
+
+        Tanglish:
+        Reply in Tanglish.
+
+        Telugu:
+        Reply in Telugu.
+
+        Malayalam:
+        Reply in Malayalam.
+
+        Hindi:
+        Reply in Hindi.
+
+        Kannada:
+        Reply in Kannada.
+
+        English:
+        Reply in English.
+
+        Mixed language:
+        Naturally follow the user's dominant language/style.
+
+        Do not switch to English merely because the wake word
+        was spoken in English.
+
+        Do not translate the user's message to English unless
+        the user asks for translation.
+
+        =====================================================
+        EMERGENCY RULE
+        =====================================================
+
+        If the user's CURRENT message clearly indicates:
+
+        - immediate danger
+        - active physical threat
+        - assault
+        - kidnapping
+        - someone following them
+        - someone threatening them
+        - someone trying to hurt them
+        - urgent request for rescue
+
+        your response MUST begin with:
 
         $EMERGENCY_KEYWORD
 
@@ -237,10 +345,12 @@ class AngelGuardAIEngine(
         He is attacking me
         They are trying to hurt me
 
-        If there is no immediate danger,
-        NEVER use $EMERGENCY_KEYWORD.
+        This emergency rule also applies when the user expresses
+        the same meaning in Tamil, Tanglish, Telugu, Malayalam,
+        Hindi, Kannada or mixed language.
 
-        Do not trigger emergency mode for:
+        Do NOT trigger an emergency for:
+
         - jokes
         - normal conversation
         - ordinary sadness
@@ -251,12 +361,12 @@ class AngelGuardAIEngine(
 
         Judge the user's CURRENT situation.
 
-        Do not trigger an emergency merely because the
-        conversation contains the word "danger".
+        Do not trigger an emergency merely because the word
+        "danger" appears.
 
-        Trigger emergency only when the user's message
-        communicates a credible immediate safety threat
-        or an urgent request for help.
+        Trigger emergency only when the user's message communicates
+        a credible immediate safety threat or an urgent request
+        for help.
 
         Keep responses suitable for speech.
 
@@ -264,10 +374,8 @@ class AngelGuardAIEngine(
 
         Do not provide long explanations.
 
-        IMPORTANT:
-        If you decide an emergency is present,
-        put $EMERGENCY_KEYWORD at the VERY BEGINNING
-        of your response.
+        If an emergency is present, place
+        $EMERGENCY_KEYWORD at the VERY BEGINNING.
     """.trimIndent()
 
     // =========================================================
@@ -376,23 +484,12 @@ class AngelGuardAIEngine(
     // WAKE WORD PATTERNS
     // =========================================================
 
-    /*
-     * These are intentional variants because Android's
-     * SpeechRecognizer may transcribe the same spoken phrase
-     * differently.
-     */
     private val wakeWordPatterns = listOf(
 
-        // Exact/common
         "hey angelguard",
         "hey angel guard",
-        "angelguard",
-        "angel guard",
-
-        // Common speech-recognition variations
         "hey angel god",
         "he angel god",
-
         "hey angel got",
         "he angel got",
 
@@ -406,23 +503,18 @@ class AngelGuardAIEngine(
 
         "hey angell guard",
         "hey angel gard",
-
         "hey angel grad",
         "hey angel card",
-
         "hey angel guarded",
-        "hey angel guard",
-
-        // Shorter forms
-        "hey angel",
-        "he angel",
-        "hey angle",
-        "he angle",
 
         "hello angelguard",
         "hello angel guard",
 
+        "angelguard",
+        "angel guard",
+
         "hi angelguard",
+        "angel card","Angel girl","angel",
         "hi angel guard"
     )
 
@@ -435,13 +527,185 @@ class AngelGuardAIEngine(
         initializeEngine()
 
         initializeTextToSpeech()
+
+        initializeWhisperRecorder()
     }
 
     // =========================================================
-    // NORMALIZE SPEECH
+    // INITIALIZE WHISPER RECORDER
+    // =========================================================
+
+    private fun initializeWhisperRecorder() {
+
+        if (engineTerminated) {
+            return
+        }
+
+        whisperRecorder =
+            WhisperConversationRecorder(
+
+                context = context,
+
+                groqApiKey = GROQ_API_KEY,
+
+                // ---------------------------------------------
+                // WHISPER TRANSCRIPTION RECEIVED
+                // ---------------------------------------------
+
+                onTranscription = { transcript ->
+
+                    mainHandler.post {
+
+                        if (
+                            engineTerminated ||
+                            !conversationActive ||
+                            emergencyTriggered.get()
+                        ) {
+                            return@post
+                        }
+
+                        val cleanTranscript =
+                            normalizeSpeech(
+                                transcript
+                            )
+
+                        if (cleanTranscript.isBlank()) {
+
+                            scheduleConversationRestart()
+
+                            return@post
+                        }
+
+                        /*
+                         * Determine language from the actual
+                         * Whisper transcript.
+                         */
+                        updateDetectedLanguageFromUserText(
+                            cleanTranscript
+                        )
+
+                        Log.d(
+                            TAG,
+                            "Whisper transcript: $cleanTranscript"
+                        )
+
+                        scheduleConversationTimeout()
+
+                        processActiveConversation(
+                            cleanTranscript
+                        )
+                    }
+                },
+
+                // ---------------------------------------------
+                // RECORDING STARTED
+                // ---------------------------------------------
+
+                onRecordingStarted = {
+
+                    Log.d(
+                        TAG,
+                        "Whisper active conversation recording started"
+                    )
+                },
+
+                // ---------------------------------------------
+                // RECORDING STOPPED
+                // ---------------------------------------------
+
+                onRecordingStopped = {
+
+                    Log.d(
+                        TAG,
+                        "Whisper active conversation recording stopped"
+                    )
+                },
+
+                // ---------------------------------------------
+                // WHISPER ERROR
+                // ---------------------------------------------
+
+                onError = { message ->
+
+                    Log.e(
+                        TAG,
+                        "Whisper recorder error: $message"
+                    )
+
+                    mainHandler.post {
+
+                        if (
+                            !engineTerminated &&
+                            conversationActive &&
+                            !emergencyTriggered.get() &&
+                            !isSpeaking
+                        ) {
+
+                            mainHandler.postDelayed(
+                                {
+
+                                    if (
+                                        !engineTerminated &&
+                                        conversationActive &&
+                                        !isSpeaking &&
+                                        !emergencyTriggered.get()
+                                    ) {
+
+                                        startWhisperConversationRecording()
+                                    }
+
+                                },
+                                LISTEN_DELAY
+                            )
+                        }
+                    }
+                }
+            )
+    }
+
+    // =========================================================
+    // NORMALIZE CONVERSATION TEXT
     // =========================================================
 
     private fun normalizeSpeech(
+        text: String
+    ): String {
+
+        /*
+         * IMPORTANT:
+         *
+         * Preserve Unicode.
+         *
+         * This keeps:
+         *
+         * Tamil
+         * Telugu
+         * Malayalam
+         * Hindi
+         * Kannada
+         *
+         * intact.
+         *
+         * It also preserves Tanglish because Tanglish is Latin text.
+         */
+        return text
+            .lowercase(Locale.ROOT)
+            .replace(
+                Regex("[^\\p{L}\\p{N}\\s]"),
+                " "
+            )
+            .replace(
+                Regex("\\s+"),
+                " "
+            )
+            .trim()
+    }
+
+    // =========================================================
+    // NORMALIZE WAKE WORD
+    // =========================================================
+
+    private fun normalizeWakeWordSpeech(
         text: String
     ): String {
 
@@ -459,7 +723,7 @@ class AngelGuardAIEngine(
     }
 
     // =========================================================
-    // REMOVE FILLER WORDS
+    // REMOVE FILLERS
     // =========================================================
 
     private fun removeFillerWords(
@@ -479,7 +743,7 @@ class AngelGuardAIEngine(
     }
 
     // =========================================================
-    // LEVENSHTEIN DISTANCE
+    // LEVENSHTEIN
     // =========================================================
 
     private fun levenshteinDistance(
@@ -507,7 +771,8 @@ class AngelGuardAIEngine(
 
         for (i in first.indices) {
 
-            current[0] = i + 1
+            current[0] =
+                i + 1
 
             for (j in second.indices) {
 
@@ -548,7 +813,10 @@ class AngelGuardAIEngine(
         second: String
     ): Double {
 
-        if (first.isEmpty() || second.isEmpty()) {
+        if (
+            first.isEmpty() ||
+            second.isEmpty()
+        ) {
             return 0.0
         }
 
@@ -574,7 +842,7 @@ class AngelGuardAIEngine(
     }
 
     // =========================================================
-    // FUZZY ANGELGUARD MATCH
+    // WAKE WORD MATCH
     // =========================================================
 
     private fun fuzzyAngelGuardMatch(
@@ -582,8 +850,8 @@ class AngelGuardAIEngine(
     ): Boolean {
 
         val cleaned =
-            removeFillerWords(
-                normalizeSpeech(text)
+            normalizeWakeWordSpeech(
+                text
             )
 
         if (cleaned.isBlank()) {
@@ -591,216 +859,179 @@ class AngelGuardAIEngine(
         }
 
         /*
-         * First check the complete phrase.
+         * Exact/common speech-recognition variants.
          */
         for (pattern in wakeWordPatterns) {
 
-            val normalizedPattern =
-                normalizeSpeech(pattern)
-
             if (
                 cleaned.contains(
-                    normalizedPattern
+                    pattern
                 )
-            ) {
-
-                return true
-            }
-        }
-
-        /*
-         * Direct compact comparison.
-         *
-         * Example:
-         *
-         * angel guard
-         * angelguard
-         *
-         * both become:
-         *
-         * angelguard
-         */
-        val compact =
-            cleaned
-                .replace(
-                    " ",
-                    ""
-                )
-
-        val target =
-            "angelguard"
-
-        if (
-            compact.contains(
-                target
-            )
-        ) {
-
-            return true
-        }
-
-        /*
-         * Fuzzy comparison against the entire compact
-         * phrase.
-         */
-        if (
-            compact.length >=
-            MIN_FUZZY_WORD_LENGTH
-        ) {
-
-            val similarityScore =
-                similarity(
-                    compact,
-                    target
-                )
-
-            if (
-                similarityScore >=
-                WAKE_SIMILARITY_THRESHOLD
             ) {
 
                 Log.d(
                     TAG,
-                    "Fuzzy wake match: '$text' score=$similarityScore"
+                    "Known wake variation detected: '$text'"
                 )
 
                 return true
             }
         }
 
-        /*
-         * Compare individual words.
-         *
-         * This catches speech recognition such as:
-         *
-         * "he angel got"
-         *
-         * "hey angle guard"
-         *
-         * "angel gard"
-         */
         val words =
             cleaned.split(
                 Regex("\\s+")
             )
 
-        for (word in words) {
-
-            if (
-                word.length >=
-                MIN_FUZZY_WORD_LENGTH
-            ) {
-
-                val score =
-                    similarity(
-                        word,
-                        target
-                    )
-
-                if (
-                    score >=
-                    WAKE_SIMILARITY_THRESHOLD
-                ) {
-
-                    Log.d(
-                        TAG,
-                        "Fuzzy individual wake match: '$word' score=$score"
-                    )
-
-                    return true
-                }
-            }
+        if (words.size < 2) {
+            return false
         }
 
         /*
-         * Special two-word phonetic approximation.
+         * IMPORTANT:
          *
-         * angel + guard
-         * angel + god
-         * angel + got
-         * angle + guard
+         * Require a wake prefix.
+         *
+         * This prevents ordinary speech containing
+         * only "angel" or "angelguard" from activating.
          */
-        val hasAngelLikeWord =
-            words.any { word ->
+        val hasWakePrefix =
+            words.take(2).any { word ->
+
+                word == "hey" ||
+                        word == "he" ||
+                        word == "hello" ||
+                        word == "hi"
+            }
+
+        if (!hasWakePrefix) {
+            return false
+        }
+
+        val angelIndex =
+            words.indexOfFirst { word ->
 
                 similarity(
                     word,
                     "angel"
-                ) >= 0.65 ||
+                ) >= 0.60 ||
+
                         similarity(
                             word,
                             "angle"
-                        ) >= 0.65
+                        ) >= 0.60 ||
+
+                        similarity(
+                            word,
+                            "angell"
+                        ) >= 0.60
             }
 
-        val hasGuardLikeWord =
-            words.any { word ->
+        if (angelIndex < 0) {
+            return false
+        }
+
+        val guardIndex =
+            words.indexOfFirst { word ->
 
                 similarity(
                     word,
                     "guard"
                 ) >= 0.55 ||
-                        similarity(
-                            word,
-                            "god"
-                        ) >= 0.60 ||
-                        similarity(
-                            word,
-                            "got"
-                        ) >= 0.60 ||
+
                         similarity(
                             word,
                             "gard"
                         ) >= 0.55 ||
+
+                        similarity(
+                            word,
+                            "god"
+                        ) >= 0.60 ||
+
+                        similarity(
+                            word,
+                            "got"
+                        ) >= 0.60 ||
+
                         similarity(
                             word,
                             "card"
+                        ) >= 0.55 ||
+
+                        similarity(
+                            word,
+                            "guarded"
                         ) >= 0.55
             }
 
         if (
-            hasAngelLikeWord &&
-            hasGuardLikeWord
+            guardIndex >= 0 &&
+            guardIndex >= angelIndex &&
+            guardIndex - angelIndex <= 2
         ) {
 
             Log.d(
                 TAG,
-                "Phonetic-style AngelGuard match: '$text'"
+                "Fuzzy AngelGuard wake match: '$text'"
             )
 
             return true
         }
 
         /*
-         * Finally accept "hey angel" / "he angel".
+         * Handle combined tokens such as:
          *
-         * This is intentionally lower priority because it
-         * can create false activations.
-         *
-         * Only accept it when the phrase starts with
-         * hey/he/hello/hi and contains angel/angle.
+         * heyangelguard
+         * heyangelgard
          */
-        val startsWithWakePrefix =
-            cleaned.startsWith("hey ") ||
-                    cleaned.startsWith("he ") ||
-                    cleaned.startsWith("hello ") ||
-                    cleaned.startsWith("hi ")
-
-        val containsAngel =
-            cleaned.contains("angel") ||
-                    cleaned.contains("angle")
-
-        if (
-            startsWithWakePrefix &&
-            containsAngel
-        ) {
-
-            Log.d(
-                TAG,
-                "Short Angel wake match: '$text'"
+        val compact =
+            cleaned.replace(
+                " ",
+                ""
             )
 
-            return true
+        val compactWithoutPrefix =
+            when {
+
+                compact.startsWith("hey") ->
+                    compact.removePrefix("hey")
+
+                compact.startsWith("hello") ->
+                    compact.removePrefix("hello")
+
+                compact.startsWith("hi") ->
+                    compact.removePrefix("hi")
+
+                compact.startsWith("he") ->
+                    compact.removePrefix("he")
+
+                else ->
+                    ""
+            }
+
+        if (
+            compactWithoutPrefix.isNotEmpty()
+        ) {
+
+            val score =
+                similarity(
+                    compactWithoutPrefix,
+                    "angelguard"
+                )
+
+            if (
+                score >=
+                WAKE_SIMILARITY_THRESHOLD
+            ) {
+
+                Log.d(
+                    TAG,
+                    "Compact fuzzy wake match: '$text' score=$score"
+                )
+
+                return true
+            }
         }
 
         return false
@@ -830,7 +1061,9 @@ class AngelGuardAIEngine(
         }
 
         try {
+
             speechRecognizer?.destroy()
+
         } catch (_: Exception) {
         }
 
@@ -860,11 +1093,11 @@ class AngelGuardAIEngine(
                     )
 
                     /*
-                     * Prefer device default language.
+                     * Wake-word stage starts with English.
                      */
                     putExtra(
                         RecognizerIntent.EXTRA_LANGUAGE,
-                        Locale.getDefault()
+                        DEFAULT_SPEECH_LANGUAGE
                     )
 
                     putExtra(
@@ -877,9 +1110,20 @@ class AngelGuardAIEngine(
                         5
                     )
 
-                    /*
-                     * Slightly longer listening window.
-                     */
+                    if (
+                        Build.VERSION.SDK_INT >= 31
+                    ) {
+
+                        putExtra(
+                            RecognizerIntent.EXTRA_BIASING_STRINGS,
+                            arrayListOf(
+                                "Hey AngelGuard",
+                                "AngelGuard",
+                                "Angel Guard"
+                            )
+                        )
+                    }
+
                     putExtra(
                         RecognizerIntent.EXTRA_SPEECH_INPUT_COMPLETE_SILENCE_LENGTH_MILLIS,
                         1800L
@@ -895,9 +1139,6 @@ class AngelGuardAIEngine(
                         700L
                     )
 
-                    /*
-                     * Bias recognition toward spoken commands.
-                     */
                     putExtra(
                         RecognizerIntent.EXTRA_CONFIDENCE_SCORES,
                         true
@@ -906,7 +1147,7 @@ class AngelGuardAIEngine(
 
             Log.d(
                 TAG,
-                "SpeechRecognizer initialized"
+                "SpeechRecognizer initialized for wake-word detection"
             )
 
         } catch (e: Exception) {
@@ -935,7 +1176,7 @@ class AngelGuardAIEngine(
 
                 Log.d(
                     TAG,
-                    "Microphone ready"
+                    "Wake-word microphone ready"
                 )
             }
 
@@ -943,7 +1184,7 @@ class AngelGuardAIEngine(
 
                 Log.d(
                     TAG,
-                    "Speech started"
+                    "Wake-word speech started"
                 )
             }
 
@@ -961,7 +1202,7 @@ class AngelGuardAIEngine(
 
                 Log.d(
                     TAG,
-                    "Speech ended"
+                    "Wake-word speech ended"
                 )
             }
 
@@ -977,7 +1218,7 @@ class AngelGuardAIEngine(
 
                         Log.d(
                             TAG,
-                            "Speech recognition: no match"
+                            "Wake recognition: no match"
                         )
                     }
 
@@ -985,7 +1226,7 @@ class AngelGuardAIEngine(
 
                         Log.d(
                             TAG,
-                            "Speech recognition: timeout"
+                            "Wake recognition: timeout"
                         )
                     }
 
@@ -993,7 +1234,7 @@ class AngelGuardAIEngine(
 
                         Log.e(
                             TAG,
-                            "Speech recognition error: $error"
+                            "Wake recognition error: $error"
                         )
                     }
                 }
@@ -1002,7 +1243,19 @@ class AngelGuardAIEngine(
                     return
                 }
 
-                scheduleListeningRestart()
+                if (!conversationActive) {
+
+                    handleWakeWordNotDetected()
+
+                } else {
+
+                    /*
+                     * Active conversation should normally NOT
+                     * reach here because Whisper is now handling
+                     * the microphone.
+                     */
+                    startWhisperConversationRecording()
+                }
             }
 
             override fun onResults(
@@ -1024,18 +1277,15 @@ class AngelGuardAIEngine(
                     matches.isNullOrEmpty()
                 ) {
 
-                    scheduleListeningRestart()
+                    if (!conversationActive) {
+                        handleWakeWordNotDetected()
+                    } else {
+                        startWhisperConversationRecording()
+                    }
 
                     return
                 }
 
-                /*
-                 * Try all recognition alternatives rather
-                 * than only matches.first().
-                 *
-                 * This is a major improvement for wake-word
-                 * detection.
-                 */
                 var bestTranscript: String? = null
 
                 for (candidate in matches) {
@@ -1046,7 +1296,7 @@ class AngelGuardAIEngine(
 
                         Log.d(
                             TAG,
-                            "Recognition candidate: $candidate"
+                            "Wake recognition candidate: $candidate"
                         )
 
                         if (
@@ -1081,7 +1331,7 @@ class AngelGuardAIEngine(
 
                 } else {
 
-                    scheduleListeningRestart()
+                    handleWakeWordNotDetected()
                 }
             }
 
@@ -1089,10 +1339,9 @@ class AngelGuardAIEngine(
                 partialResults: Bundle?
             ) {
                 /*
-                 * Intentionally ignored.
+                 * Ignore partial results.
                  *
-                 * This prevents duplicate wake-word
-                 * activation and duplicate AI requests.
+                 * This prevents duplicate activation.
                  */
             }
 
@@ -1132,7 +1381,9 @@ class AngelGuardAIEngine(
 
                         val result =
                             textToSpeech?.setLanguage(
-                                Locale.getDefault()
+                                Locale.forLanguageTag(
+                                    DEFAULT_SPEECH_LANGUAGE
+                                )
                             )
 
                         ttsReady =
@@ -1176,32 +1427,46 @@ class AngelGuardAIEngine(
                                             isSpeaking = false
 
                                             if (
-                                                !engineTerminated &&
+                                                engineTerminated
+                                            ) {
+                                                return@post
+                                            }
+
+                                            if (
                                                 conversationActive
                                             ) {
 
+                                                /*
+                                                 * IMPORTANT:
+                                                 *
+                                                 * Active conversation no longer
+                                                 * returns to Android SpeechRecognizer.
+                                                 *
+                                                 * It goes to Whisper instead.
+                                                 */
                                                 mainHandler.postDelayed(
                                                     {
 
                                                         if (
                                                             !engineTerminated &&
                                                             conversationActive &&
-                                                            !isListening.get() &&
-                                                            !isSpeaking
+                                                            !isSpeaking &&
+                                                            !emergencyTriggered.get()
                                                         ) {
 
-                                                            startListening()
+                                                            startWhisperConversationRecording()
                                                         }
 
                                                     },
                                                     LISTEN_DELAY
                                                 )
 
-                                            } else if (
-                                                !engineTerminated &&
-                                                !conversationActive
-                                            ) {
+                                            } else {
 
+                                                /*
+                                                 * Standby mode returns to
+                                                 * the wake-word recognizer.
+                                                 */
                                                 mainHandler.postDelayed(
                                                     {
 
@@ -1236,10 +1501,11 @@ class AngelGuardAIEngine(
                                             )
 
                                             if (
-                                                !engineTerminated
+                                                !engineTerminated &&
+                                                !emergencyTriggered.get()
                                             ) {
 
-                                                scheduleListeningRestart()
+                                                scheduleConversationRestart()
                                             }
                                         }
                                     }
@@ -1265,7 +1531,140 @@ class AngelGuardAIEngine(
     }
 
     // =========================================================
-    // START LISTENING
+    // UPDATE TTS LANGUAGE
+    // =========================================================
+
+    private fun updateTtsLanguage(
+        languageTag: String
+    ) {
+
+        if (
+            !ttsReady ||
+            engineTerminated
+        ) {
+            return
+        }
+
+        try {
+
+            val normalized =
+                languageTag.lowercase(
+                    Locale.ROOT
+                )
+
+            val locale =
+                when {
+
+                    normalized.startsWith("ta") ->
+                        Locale.forLanguageTag(
+                            TAMIL_LANGUAGE
+                        )
+
+                    normalized.startsWith("te") ->
+                        Locale.forLanguageTag(
+                            TELUGU_LANGUAGE
+                        )
+
+                    normalized.startsWith("ml") ->
+                        Locale.forLanguageTag(
+                            MALAYALAM_LANGUAGE
+                        )
+
+                    normalized.startsWith("hi") ->
+                        Locale.forLanguageTag(
+                            HINDI_LANGUAGE
+                        )
+
+                    normalized.startsWith("kn") ->
+                        Locale.forLanguageTag(
+                            KANNADA_LANGUAGE
+                        )
+
+                    else ->
+                        Locale.forLanguageTag(
+                            DEFAULT_SPEECH_LANGUAGE
+                        )
+                }
+
+            val result =
+                textToSpeech?.setLanguage(
+                    locale
+                )
+
+            val supported =
+                result !=
+                        TextToSpeech.LANG_MISSING_DATA &&
+                        result !=
+                        TextToSpeech.LANG_NOT_SUPPORTED
+
+            if (supported) {
+
+                Log.d(
+                    TAG,
+                    "TTS language changed to ${locale.toLanguageTag()}"
+                )
+
+            } else {
+
+                Log.w(
+                    TAG,
+                    "TTS language not supported: ${locale.toLanguageTag()}"
+                )
+            }
+
+        } catch (e: Exception) {
+
+            Log.e(
+                TAG,
+                "Failed to update TTS language",
+                e
+            )
+        }
+    }
+
+    // =========================================================
+    // INFER TTS LANGUAGE FROM TEXT
+    // =========================================================
+
+    private fun inferTtsLanguageFromText(
+        text: String
+    ): String {
+
+        return when {
+
+            Regex(
+                "[\\u0B80-\\u0BFF]"
+            ).containsMatchIn(text) ->
+                TAMIL_LANGUAGE
+
+            Regex(
+                "[\\u0C00-\\u0C7F]"
+            ).containsMatchIn(text) ->
+                TELUGU_LANGUAGE
+
+            Regex(
+                "[\\u0D00-\\u0D7F]"
+            ).containsMatchIn(text) ->
+                MALAYALAM_LANGUAGE
+
+            Regex(
+                "[\\u0900-\\u097F]"
+            ).containsMatchIn(text) ->
+                HINDI_LANGUAGE
+
+            Regex(
+                "[\\u0C80-\\u0CFF]"
+            ).containsMatchIn(text) ->
+                KANNADA_LANGUAGE
+
+            else ->
+                preferredResponseLanguage
+                    ?: detectedSpeechLanguage
+        }
+    }
+
+    // =========================================================
+    // START WAKE-WORD LISTENING
     // =========================================================
 
     @Synchronized
@@ -1275,18 +1674,34 @@ class AngelGuardAIEngine(
             return
         }
 
+        /*
+         * If conversation is active, do NOT start the Android
+         * SpeechRecognizer. Active speech is handled by Whisper.
+         */
+        if (conversationActive) {
+
+            if (
+                !isSpeaking &&
+                !emergencyTriggered.get()
+            ) {
+
+                startWhisperConversationRecording()
+            }
+
+            return
+        }
+
         if (isSpeaking) {
 
             Log.d(
                 TAG,
-                "Not listening while TTS is speaking"
+                "Not starting wake listener while TTS is speaking"
             )
 
             return
         }
 
         if (isListening.get()) {
-
             return
         }
 
@@ -1312,26 +1727,24 @@ class AngelGuardAIEngine(
 
             restartPending = false
 
+            /*
+             * Wake-word mode is always English.
+             */
+            recognitionIntent.putExtra(
+                RecognizerIntent.EXTRA_LANGUAGE,
+                DEFAULT_SPEECH_LANGUAGE
+            )
+
             isListening.set(true)
 
             speechRecognizer?.startListening(
                 recognitionIntent
             )
 
-            if (conversationActive) {
-
-                Log.d(
-                    TAG,
-                    "Conversation microphone started"
-                )
-
-            } else {
-
-                Log.d(
-                    TAG,
-                    "Wake-word standby listening started"
-                )
-            }
+            Log.d(
+                TAG,
+                "Wake-word standby listening started"
+            )
 
         } catch (e: Exception) {
 
@@ -1339,7 +1752,7 @@ class AngelGuardAIEngine(
 
             Log.e(
                 TAG,
-                "Unable to start speech recognition",
+                "Unable to start wake-word recognition",
                 e
             )
 
@@ -1347,6 +1760,48 @@ class AngelGuardAIEngine(
 
             scheduleListeningRestart()
         }
+    }
+
+    // =========================================================
+    // START WHISPER CONVERSATION
+    // =========================================================
+
+    private fun startWhisperConversationRecording() {
+
+        if (
+            engineTerminated ||
+            !conversationActive ||
+            isSpeaking ||
+            emergencyTriggered.get()
+        ) {
+            return
+        }
+
+        if (
+            whisperRecorder?.isRecording() == true
+        ) {
+            return
+        }
+
+        /*
+         * Make sure the old wake-word recognizer is not holding
+         * the microphone.
+         */
+        try {
+            speechRecognizer?.cancel()
+        } catch (_: Exception) {
+        }
+
+        isListening.set(false)
+
+        restartPending = false
+
+        Log.d(
+            TAG,
+            "Starting Whisper multilingual conversation capture"
+        )
+
+        whisperRecorder?.startRecording()
     }
 
     // =========================================================
@@ -1370,7 +1825,10 @@ class AngelGuardAIEngine(
         mainHandler.postDelayed(
             {
 
-                if (!engineTerminated) {
+                if (
+                    !engineTerminated &&
+                    !conversationActive
+                ) {
 
                     initializeEngine()
                 }
@@ -1405,17 +1863,31 @@ class AngelGuardAIEngine(
             if (conversationActive) {
 
                 if (
-                    !isListening.get() &&
-                    !isSpeaking
+                    !isSpeaking &&
+                    whisperRecorder?.isRecording() != true
                 ) {
 
-                    startListening()
+                    startWhisperConversationRecording()
                 }
 
                 return@post
             }
 
             conversationActive = true
+            wakeWordFailureCount = 0
+
+            try {
+
+                onWakeWordDetected()
+
+            } catch (e: Exception) {
+
+                Log.e(
+                    TAG,
+                    "Wake word callback failed",
+                    e
+                )
+            }
 
             Log.d(
                 TAG,
@@ -1431,19 +1903,6 @@ class AngelGuardAIEngine(
                 TAG,
                 "================================"
             )
-
-            try {
-
-                onWakeWordDetected()
-
-            } catch (e: Exception) {
-
-                Log.e(
-                    TAG,
-                    "Wake word callback failed",
-                    e
-                )
-            }
 
             speak(
                 "Yes, I'm listening."
@@ -1485,6 +1944,11 @@ class AngelGuardAIEngine(
 
                 conversationActive = false
 
+                try {
+                    whisperRecorder?.stopRecording()
+                } catch (_: Exception) {
+                }
+
                 stopListeningInternal()
 
                 speak(
@@ -1514,6 +1978,11 @@ class AngelGuardAIEngine(
                 "ANGELGUARD CONVERSATION STOPPED"
             )
 
+            try {
+                whisperRecorder?.stopRecording()
+            } catch (_: Exception) {
+            }
+
             stopListeningInternal()
 
             stopSpeaking()
@@ -1521,7 +1990,6 @@ class AngelGuardAIEngine(
             if (!engineTerminated) {
 
                 mainHandler.postDelayed(
-
                     {
 
                         if (
@@ -1535,7 +2003,6 @@ class AngelGuardAIEngine(
                         }
 
                     },
-
                     LISTEN_DELAY
                 )
             }
@@ -1543,11 +2010,11 @@ class AngelGuardAIEngine(
     }
 
     // =========================================================
-    // SCHEDULE LISTENING RESTART
+    // SCHEDULE CONVERSATION RESTART
     // =========================================================
 
     @Synchronized
-    private fun scheduleListeningRestart() {
+    private fun scheduleConversationRestart() {
 
         if (engineTerminated) {
             return
@@ -1568,7 +2035,6 @@ class AngelGuardAIEngine(
         restartPending = true
 
         mainHandler.postDelayed(
-
             {
 
                 restartPending = false
@@ -1581,24 +2047,78 @@ class AngelGuardAIEngine(
                     return@postDelayed
                 }
 
-                if (isListening.get()) {
-                    return@postDelayed
-                }
-
                 if (isSpeaking) {
                     return@postDelayed
                 }
 
-                startListening()
+                if (conversationActive) {
+
+                    startWhisperConversationRecording()
+
+                } else {
+
+                    if (
+                        !isListening.get()
+                    ) {
+
+                        startListening()
+                    }
+                }
 
             },
-
             ERROR_RESTART_DELAY
         )
     }
 
     // =========================================================
-    // PROCESS TRANSCRIPT
+    // BACKWARD-COMPATIBLE RESTART
+    // =========================================================
+
+    private fun scheduleListeningRestart() {
+
+        scheduleConversationRestart()
+    }
+
+    // =========================================================
+    // WAKE WORD FAILURE
+    // =========================================================
+
+    private fun handleWakeWordNotDetected() {
+
+        if (
+            engineTerminated ||
+            conversationActive ||
+            emergencyTriggered.get()
+        ) {
+            return
+        }
+
+        wakeWordFailureCount++
+
+        Log.d(
+            TAG,
+            "Wake-word detection failed: $wakeWordFailureCount"
+        )
+
+        if (
+            wakeWordFailureCount >=
+            wakeWordFailurePromptThreshold
+        ) {
+
+            wakeWordFailureCount = 0
+
+            speak(
+                "I could not detect the exact wake word. Please say Hey AngelGuard clearly."
+            )
+
+        } else {
+
+            scheduleListeningRestart()
+        }
+    }
+
+    // =========================================================
+    // PROCESS SPEECH TRANSCRIPT
     // =========================================================
 
     private fun processTranscript(
@@ -1613,35 +2133,30 @@ class AngelGuardAIEngine(
             return
         }
 
+        /*
+         * This function is primarily for the wake-word recognizer.
+         */
         val normalizedText =
             normalizeSpeech(
                 phrase
             )
 
-        if (normalizedText.isEmpty()) {
+        if (normalizedText.isBlank()) {
 
-            scheduleListeningRestart()
+            handleWakeWordNotDetected()
 
             return
         }
 
         Log.d(
             TAG,
-            "Recognized speech: $normalizedText"
+            "Wake transcript: $normalizedText"
         )
-
-        // =====================================================
-        // WAKE WORD CHECK
-        // =====================================================
 
         val detectedWakeWord =
             fuzzyAngelGuardMatch(
-                normalizedText
+                phrase
             )
-
-        // =====================================================
-        // STANDBY
-        // =====================================================
 
         if (!conversationActive) {
 
@@ -1668,6 +2183,7 @@ class AngelGuardAIEngine(
                 )
 
                 conversationActive = true
+                wakeWordFailureCount = 0
 
                 try {
 
@@ -1699,14 +2215,11 @@ class AngelGuardAIEngine(
                 }
 
                 /*
-                 * If the recognition result contained
-                 * both the wake word and the command:
+                 * Example:
                  *
-                 * "he angel got what is the weather"
+                 * "hey angel god can you hear me"
                  *
-                 * then immediately process:
-                 *
-                 * "what is the weather"
+                 * We still process the command immediately.
                  */
                 scheduleConversationTimeout()
 
@@ -1714,25 +2227,23 @@ class AngelGuardAIEngine(
                     command
                 )
 
-                return
+            } else {
+
+                Log.d(
+                    TAG,
+                    "Speech ignored - waiting for exact AngelGuard wake word"
+                )
+
+                handleWakeWordNotDetected()
             }
-
-            Log.d(
-                TAG,
-                "Speech ignored - waiting for AngelGuard wake word"
-            )
-
-            scheduleListeningRestart()
 
             return
         }
 
-        // =====================================================
-        // ACTIVE CONVERSATION
-        // =====================================================
-
-        scheduleConversationTimeout()
-
+        /*
+         * This branch should rarely happen because Whisper handles
+         * active conversation.
+         */
         processActiveConversation(
             normalizedText
         )
@@ -1749,11 +2260,9 @@ class AngelGuardAIEngine(
         var result =
             normalizeSpeech(text)
 
-        /*
-         * Remove common exact phrases.
-         */
         val exactPatterns =
             listOf(
+
                 "hey angelguard",
                 "hey angel guard",
 
@@ -1776,10 +2285,7 @@ class AngelGuardAIEngine(
                 "hello angel guard",
 
                 "hi angelguard",
-                "hi angel guard",
-
-                "angelguard",
-                "angel guard"
+                "hi angel guard"
             )
 
         for (pattern in exactPatterns) {
@@ -1792,25 +2298,15 @@ class AngelGuardAIEngine(
 
                 result =
                     result
-                        .removePrefix(pattern)
+                        .removePrefix(
+                            pattern
+                        )
                         .trim()
 
                 return result
             }
         }
 
-        /*
-         * Handle speech recognition variants where
-         * the wake phrase is slightly incorrect.
-         *
-         * Example:
-         *
-         * he angel got can you hear me
-         *
-         * becomes:
-         *
-         * can you hear me
-         */
         val words =
             result.split(
                 Regex("\\s+")
@@ -1847,6 +2343,7 @@ class AngelGuardAIEngine(
                         word,
                         "angel"
                     ) >= 0.60 ||
+
                     similarity(
                         word,
                         "angle"
@@ -1862,14 +2359,17 @@ class AngelGuardAIEngine(
                         word,
                         "guard"
                     ) >= 0.50 ||
+
                     similarity(
                         word,
                         "god"
                     ) >= 0.50 ||
+
                     similarity(
                         word,
                         "got"
                     ) >= 0.50 ||
+
                     similarity(
                         word,
                         "gard"
@@ -1906,6 +2406,286 @@ class AngelGuardAIEngine(
     }
 
     // =========================================================
+    // LANGUAGE DETECTION
+    // =========================================================
+
+    private fun updateDetectedLanguageFromUserText(
+        text: String
+    ) {
+
+        val detected =
+            when {
+
+                Regex(
+                    "[\\u0B80-\\u0BFF]"
+                ).containsMatchIn(text) ->
+                    TAMIL_LANGUAGE
+
+                Regex(
+                    "[\\u0C00-\\u0C7F]"
+                ).containsMatchIn(text) ->
+                    TELUGU_LANGUAGE
+
+                Regex(
+                    "[\\u0D00-\\u0D7F]"
+                ).containsMatchIn(text) ->
+                    MALAYALAM_LANGUAGE
+
+                Regex(
+                    "[\\u0900-\\u097F]"
+                ).containsMatchIn(text) ->
+                    HINDI_LANGUAGE
+
+                Regex(
+                    "[\\u0C80-\\u0CFF]"
+                ).containsMatchIn(text) ->
+                    KANNADA_LANGUAGE
+
+                else ->
+                    null
+            }
+
+        if (detected != null) {
+
+            detectedSpeechLanguage =
+                detected
+
+            Log.d(
+                TAG,
+                "User language inferred from native script: $detected"
+            )
+
+            updateTtsLanguage(
+                detected
+            )
+        }
+    }
+
+    // =========================================================
+    // EXPLICIT LANGUAGE REQUEST
+    // =========================================================
+
+    private fun detectRequestedResponseLanguage(
+        text: String
+    ): String? {
+
+        val normalized =
+            normalizeSpeech(
+                text
+            )
+
+        if (normalized.isBlank()) {
+            return null
+        }
+
+        // -----------------------------------------------------
+        // TAMIL
+        // -----------------------------------------------------
+
+        if (
+            normalized.contains(
+                "talk to me in tamil"
+            ) ||
+            normalized.contains(
+                "speak to me in tamil"
+            ) ||
+            normalized.contains(
+                "speak tamil"
+            ) ||
+            normalized.contains(
+                "talk tamil"
+            ) ||
+            normalized.contains(
+                "respond in tamil"
+            ) ||
+            normalized.contains(
+                "reply in tamil"
+            ) ||
+            normalized.contains(
+                "answer in tamil"
+            ) ||
+            normalized.contains(
+                "tamil la pesu"
+            ) ||
+            normalized.contains(
+                "tamil la pesunga"
+            ) ||
+            normalized.contains(
+                "tamil la pesuviya"
+            )
+        ) {
+            return TAMIL_LANGUAGE
+        }
+
+        // -----------------------------------------------------
+        // TELUGU
+        // -----------------------------------------------------
+
+        if (
+            normalized.contains(
+                "talk to me in telugu"
+            ) ||
+            normalized.contains(
+                "speak to me in telugu"
+            ) ||
+            normalized.contains(
+                "speak telugu"
+            ) ||
+            normalized.contains(
+                "respond in telugu"
+            ) ||
+            normalized.contains(
+                "reply in telugu"
+            ) ||
+            normalized.contains(
+                "answer in telugu"
+            )
+        ) {
+            return TELUGU_LANGUAGE
+        }
+
+        // -----------------------------------------------------
+        // MALAYALAM
+        // -----------------------------------------------------
+
+        if (
+            normalized.contains(
+                "talk to me in malayalam"
+            ) ||
+            normalized.contains(
+                "speak to me in malayalam"
+            ) ||
+            normalized.contains(
+                "speak malayalam"
+            ) ||
+            normalized.contains(
+                "respond in malayalam"
+            ) ||
+            normalized.contains(
+                "reply in malayalam"
+            ) ||
+            normalized.contains(
+                "answer in malayalam"
+            )
+        ) {
+            return MALAYALAM_LANGUAGE
+        }
+
+        // -----------------------------------------------------
+        // HINDI
+        // -----------------------------------------------------
+
+        if (
+            normalized.contains(
+                "talk to me in hindi"
+            ) ||
+            normalized.contains(
+                "speak to me in hindi"
+            ) ||
+            normalized.contains(
+                "speak hindi"
+            ) ||
+            normalized.contains(
+                "respond in hindi"
+            ) ||
+            normalized.contains(
+                "reply in hindi"
+            ) ||
+            normalized.contains(
+                "answer in hindi"
+            )
+        ) {
+            return HINDI_LANGUAGE
+        }
+
+        // -----------------------------------------------------
+        // KANNADA
+        // -----------------------------------------------------
+
+        if (
+            normalized.contains(
+                "talk to me in kannada"
+            ) ||
+            normalized.contains(
+                "speak to me in kannada"
+            ) ||
+            normalized.contains(
+                "speak kannada"
+            ) ||
+            normalized.contains(
+                "respond in kannada"
+            ) ||
+            normalized.contains(
+                "reply in kannada"
+            ) ||
+            normalized.contains(
+                "answer in kannada"
+            )
+        ) {
+            return KANNADA_LANGUAGE
+        }
+
+        // -----------------------------------------------------
+        // ENGLISH
+        // -----------------------------------------------------
+
+        if (
+            normalized.contains(
+                "talk to me in english"
+            ) ||
+            normalized.contains(
+                "speak to me in english"
+            ) ||
+            normalized.contains(
+                "speak english"
+            ) ||
+            normalized.contains(
+                "respond in english"
+            ) ||
+            normalized.contains(
+                "reply in english"
+            ) ||
+            normalized.contains(
+                "answer in english"
+            )
+        ) {
+            return DEFAULT_SPEECH_LANGUAGE
+        }
+
+        return null
+    }
+
+    // =========================================================
+    // LANGUAGE CONFIRMATION
+    // =========================================================
+
+    private fun languageConfirmationResponse(
+        languageTag: String
+    ): String {
+
+        return when {
+
+            languageTag.startsWith("ta") ->
+                "சரி. இனிமேல் நான் தமிழில் பேசுகிறேன்."
+
+            languageTag.startsWith("te") ->
+                "సరే. ఇక నుంచి నేను తెలుగులో మాట్లాడుతాను."
+
+            languageTag.startsWith("ml") ->
+                "ശരി. ഇനി മുതൽ ഞാൻ മലയാളത്തിൽ സംസാരിക്കും."
+
+            languageTag.startsWith("hi") ->
+                "ठीक है। अब से मैं हिंदी में बात करूंगा।"
+
+            languageTag.startsWith("kn") ->
+                "ಸರಿ. ಇನ್ನು ಮುಂದೆ ನಾನು ಕನ್ನಡದಲ್ಲಿ ಮಾತನಾಡುತ್ತೇನೆ."
+
+            else ->
+                "Okay. I will speak in English."
+        }
+    }
+
+    // =========================================================
     // ACTIVE CONVERSATION PROCESSING
     // =========================================================
 
@@ -1918,13 +2698,51 @@ class AngelGuardAIEngine(
             !conversationActive ||
             emergencyTriggered.get()
         ) {
-
             return
         }
 
         if (normalizedText.isBlank()) {
 
-            scheduleListeningRestart()
+            scheduleConversationRestart()
+
+            return
+        }
+
+        scheduleConversationTimeout()
+
+        // =====================================================
+        // EXPLICIT LANGUAGE REQUEST
+        // =====================================================
+
+        val requestedLanguage =
+            detectRequestedResponseLanguage(
+                normalizedText
+            )
+
+        if (
+            requestedLanguage != null
+        ) {
+
+            preferredResponseLanguage =
+                requestedLanguage
+
+            detectedSpeechLanguage =
+                requestedLanguage
+
+            Log.d(
+                TAG,
+                "Explicit response language requested: $requestedLanguage"
+            )
+
+            updateTtsLanguage(
+                requestedLanguage
+            )
+
+            speak(
+                languageConfirmationResponse(
+                    requestedLanguage
+                )
+            )
 
             return
         }
@@ -1982,6 +2800,11 @@ class AngelGuardAIEngine(
                 conversationTimeoutRunnable
             )
 
+            try {
+                whisperRecorder?.stopRecording()
+            } catch (_: Exception) {
+            }
+
             speak(
                 "Okay. I'm here whenever you need me."
             )
@@ -1990,7 +2813,7 @@ class AngelGuardAIEngine(
         }
 
         // =====================================================
-        // PREVENT DUPLICATE AI REQUESTS
+        // PREVENT DUPLICATE REQUESTS
         // =====================================================
 
         if (
@@ -2081,13 +2904,13 @@ class AngelGuardAIEngine(
 
             } else {
 
-                scheduleListeningRestart()
+                scheduleConversationRestart()
             }
         }
     }
 
     // =========================================================
-    // TEXT TO SPEECH
+    // SPEAK
     // =========================================================
 
     private fun speak(
@@ -2102,7 +2925,7 @@ class AngelGuardAIEngine(
 
             if (text.isBlank()) {
 
-                scheduleListeningRestart()
+                scheduleConversationRestart()
 
                 return@post
             }
@@ -2114,14 +2937,38 @@ class AngelGuardAIEngine(
                     "TTS is not ready"
                 )
 
-                scheduleListeningRestart()
+                scheduleConversationRestart()
 
                 return@post
             }
 
             try {
 
+                /*
+                 * Stop both possible microphone systems before
+                 * TTS begins.
+                 */
                 stopListeningInternal()
+
+                try {
+                    whisperRecorder?.stopRecording()
+                } catch (_: Exception) {
+                }
+
+                /*
+                 * If the response is native-script Tamil/Telugu/etc.,
+                 * automatically select that TTS language.
+                 *
+                 * Otherwise keep the preferred conversation language.
+                 */
+                val responseLanguage =
+                    inferTtsLanguageFromText(
+                        text
+                    )
+
+                updateTtsLanguage(
+                    responseLanguage
+                )
 
                 isSpeaking = true
 
@@ -2154,7 +3001,7 @@ class AngelGuardAIEngine(
                     e
                 )
 
-                scheduleListeningRestart()
+                scheduleConversationRestart()
             }
         }
     }
@@ -2182,7 +3029,7 @@ class AngelGuardAIEngine(
     }
 
     // =========================================================
-    // STOP LISTENING
+    // STOP SPEECH RECOGNIZER
     // =========================================================
 
     private fun stopListeningInternal() {
@@ -2200,7 +3047,7 @@ class AngelGuardAIEngine(
     }
 
     // =========================================================
-    // EMERGENCY TRIGGER
+    // EMERGENCY
     // =========================================================
 
     private fun triggerEmergency() {
@@ -2245,6 +3092,11 @@ class AngelGuardAIEngine(
             conversationTimeoutRunnable
         )
 
+        try {
+            whisperRecorder?.stopRecording()
+        } catch (_: Exception) {
+        }
+
         stopListeningInternal()
 
         stopSpeaking()
@@ -2281,10 +3133,6 @@ class AngelGuardAIEngine(
         withContext(Dispatchers.IO) {
 
             try {
-
-                // =================================================
-                // API KEY CHECK
-                // =================================================
 
                 if (
                     GROQ_API_KEY.isBlank() ||
@@ -2343,208 +3191,293 @@ class AngelGuardAIEngine(
                             "stream",
                             false
                         )
+
+                        /*
+                         * Prevent GPT-OSS from consuming the entire
+                         * completion budget with hidden reasoning.
+                         */
+                        put(
+                            "include_reasoning",
+                            false
+                        )
                     }
 
-                val body =
+                val requestBody =
                     jsonBody
                         .toString()
-                        .toRequestBody(
-                            "application/json; charset=utf-8"
-                                .toMediaType()
+                        .toByteArray(
+                            StandardCharsets.UTF_8
                         )
 
                 // =================================================
-                // HTTP REQUEST
+                // HTTP
                 // =================================================
 
-                val request =
-                    Request.Builder()
-                        .url(BASE_URL)
-                        .addHeader(
-                            "Authorization",
-                            "Bearer $GROQ_API_KEY"
-                        )
-                        .addHeader(
-                            "Content-Type",
-                            "application/json"
-                        )
-                        .post(body)
-                        .build()
+                val connection =
+                    (
+                            URL(BASE_URL)
+                                .openConnection()
+                                    as HttpURLConnection
+                            ).apply {
 
-                // =================================================
-                // API CALL
-                // =================================================
+                            requestMethod =
+                                "POST"
 
-                client
-                    .newCall(request)
-                    .execute()
-                    .use { response ->
+                            connectTimeout =
+                                connectTimeoutMs
 
-                        val responseData =
-                            response.body?.string()
+                            readTimeout =
+                                readTimeoutMs
 
-                        if (!response.isSuccessful) {
+                            doOutput = true
 
-                            Log.e(
-                                TAG,
-                                "Groq HTTP error: ${response.code}"
+                            doInput = true
+
+                            setRequestProperty(
+                                "Authorization",
+                                "Bearer $GROQ_API_KEY"
                             )
 
-                            Log.e(
-                                TAG,
-                                "Groq response: $responseData"
+                            setRequestProperty(
+                                "Content-Type",
+                                "application/json; charset=utf-8"
                             )
 
-                            withContext(
-                                Dispatchers.Main
-                            ) {
-
-                                onResponse(
-                                    "I'm having trouble connecting right now. Please try again.",
-                                    false
-                                )
-                            }
-
-                            return@withContext
+                            setRequestProperty(
+                                "Accept",
+                                "application/json"
+                            )
                         }
 
+                try {
+
+                    connection.outputStream.use { outputStream ->
+
+                        outputStream.write(
+                            requestBody
+                        )
+
+                        outputStream.flush()
+                    }
+
+                    val responseCode =
+                        connection.responseCode
+
+                    val responseStream =
                         if (
-                            responseData.isNullOrBlank()
+                            responseCode in 200..299
                         ) {
 
-                            withContext(
-                                Dispatchers.Main
-                            ) {
+                            connection.inputStream
 
-                                onResponse(
-                                    "I couldn't understand the response.",
-                                    false
-                                )
-                            }
+                        } else {
 
-                            return@withContext
+                            connection.errorStream
                         }
 
-                        // =================================================
-                        // PARSE JSON
-                        // =================================================
+                    val responseData =
+                        responseStream
+                            ?.use { stream ->
 
-                        val jsonResponse =
-                            try {
-
-                                JSONObject(
-                                    responseData
-                                )
-
-                            } catch (e: Exception) {
-
-                                Log.e(
-                                    TAG,
-                                    "Invalid Groq JSON response",
-                                    e
-                                )
-
-                                withContext(
-                                    Dispatchers.Main
-                                ) {
-
-                                    onResponse(
-                                        "I received an invalid AI response.",
-                                        false
+                                BufferedReader(
+                                    InputStreamReader(
+                                        stream,
+                                        StandardCharsets.UTF_8
                                     )
+                                ).use { reader ->
+
+                                    reader.readText()
                                 }
-
-                                return@withContext
                             }
 
-                        val choices =
-                            jsonResponse.optJSONArray(
-                                "choices"
-                            )
+                    if (
+                        responseCode !in
+                        200..299
+                    ) {
 
-                        if (
-                            choices == null ||
-                            choices.length() == 0
-                        ) {
+                        Log.e(
+                            TAG,
+                            "Groq HTTP error: $responseCode"
+                        )
 
-                            withContext(
-                                Dispatchers.Main
-                            ) {
-
-                                onResponse(
-                                    "I couldn't generate a response.",
-                                    false
-                                )
-                            }
-
-                            return@withContext
-                        }
-
-                        val firstChoice =
-                            choices.optJSONObject(0)
-
-                        val message =
-                            firstChoice?.optJSONObject(
-                                "message"
-                            )
-
-                        val rawReply =
-                            message
-                                ?.optString(
-                                    "content",
-                                    ""
-                                )
-                                ?.trim()
-                                .orEmpty()
-
-                        if (rawReply.isEmpty()) {
-
-                            withContext(
-                                Dispatchers.Main
-                            ) {
-
-                                onResponse(
-                                    "I couldn't generate a response.",
-                                    false
-                                )
-                            }
-
-                            return@withContext
-                        }
-
-                        // =================================================
-                        // EMERGENCY DETECTION
-                        // =================================================
-
-                        val isEmergency =
-                            rawReply.contains(
-                                EMERGENCY_KEYWORD,
-                                ignoreCase = true
-                            )
-
-                        // =================================================
-                        // CLEAN RESPONSE
-                        // =================================================
-
-                        val cleanReply =
-                            rawReply
-                                .replace(
-                                    EMERGENCY_KEYWORD,
-                                    "",
-                                    ignoreCase = true
-                                )
-                                .trim()
+                        Log.e(
+                            TAG,
+                            "Groq response: $responseData"
+                        )
 
                         withContext(
                             Dispatchers.Main
                         ) {
 
                             onResponse(
-                                cleanReply,
-                                isEmergency
+                                "I'm having trouble connecting right now. Please try again.",
+                                false
                             )
                         }
+
+                        return@withContext
                     }
+
+                    if (
+                        responseData.isNullOrBlank()
+                    ) {
+
+                        withContext(
+                            Dispatchers.Main
+                        ) {
+
+                            onResponse(
+                                "I couldn't understand the response.",
+                                false
+                            )
+                        }
+
+                        return@withContext
+                    }
+
+                    // =================================================
+                    // JSON
+                    // =================================================
+
+                    val jsonResponse =
+                        try {
+
+                            JSONObject(
+                                responseData
+                            )
+
+                        } catch (e: Exception) {
+
+                            Log.e(
+                                TAG,
+                                "Invalid Groq JSON response",
+                                e
+                            )
+
+                            withContext(
+                                Dispatchers.Main
+                            ) {
+
+                                onResponse(
+                                    "I received an invalid AI response.",
+                                    false
+                                )
+                            }
+
+                            return@withContext
+                        }
+
+                    val choices =
+                        jsonResponse.optJSONArray(
+                            "choices"
+                        )
+
+                    if (
+                        choices == null ||
+                        choices.length() == 0
+                    ) {
+
+                        Log.e(
+                            TAG,
+                            "Groq returned no choices. Full response: $responseData"
+                        )
+
+                        withContext(
+                            Dispatchers.Main
+                        ) {
+
+                            onResponse(
+                                "I couldn't generate a response.",
+                                false
+                            )
+                        }
+
+                        return@withContext
+                    }
+
+                    val firstChoice =
+                        choices.optJSONObject(
+                            0
+                        )
+
+                    val message =
+                        firstChoice?.optJSONObject(
+                            "message"
+                        )
+
+                    val rawReply =
+                        message
+                            ?.optString(
+                                "content",
+                                ""
+                            )
+                            ?.trim()
+                            .orEmpty()
+
+                    if (
+                        rawReply.isEmpty()
+                    ) {
+
+                        Log.e(
+                            TAG,
+                            "Groq message.content is empty. Message JSON: ${message?.toString()}"
+                        )
+
+                        Log.e(
+                            TAG,
+                            "Groq full response: $responseData"
+                        )
+
+                        withContext(
+                            Dispatchers.Main
+                        ) {
+
+                            onResponse(
+                                "I couldn't generate a response.",
+                                false
+                            )
+                        }
+
+                        return@withContext
+                    }
+
+                    // =================================================
+                    // EMERGENCY DETECTION
+                    // =================================================
+
+                    val isEmergency =
+                        rawReply.contains(
+                            EMERGENCY_KEYWORD,
+                            ignoreCase = true
+                        )
+
+                    // =================================================
+                    // CLEAN RESPONSE
+                    // =================================================
+
+                    val cleanReply =
+                        rawReply
+                            .replace(
+                                EMERGENCY_KEYWORD,
+                                "",
+                                ignoreCase = true
+                            )
+                            .trim()
+
+                    withContext(
+                        Dispatchers.Main
+                    ) {
+
+                        onResponse(
+                            cleanReply,
+                            isEmergency
+                        )
+                    }
+
+                } finally {
+
+                    connection.disconnect()
+                }
 
             } catch (e: Exception) {
 
@@ -2594,6 +3527,113 @@ class AngelGuardAIEngine(
             }
         )
 
+        val responseLanguage =
+            preferredResponseLanguage
+                ?: detectedSpeechLanguage
+
+        val languageInstruction =
+            when {
+
+                responseLanguage.startsWith(
+                    "ta"
+                ) ->
+                    """
+                    The current preferred language is Tamil.
+
+                    If the user message is Tamil script,
+                    reply in Tamil script.
+
+                    If the user message is Tanglish,
+                    understand it as Tamil and reply naturally
+                    in Tanglish unless the user explicitly asks
+                    for Tamil script.
+
+                    Do not reply in English.
+                    """.trimIndent()
+
+                responseLanguage.startsWith(
+                    "te"
+                ) ->
+                    """
+                    The current preferred language is Telugu.
+                    Reply in Telugu script.
+                    Do not reply in English unless explicitly requested.
+                    """.trimIndent()
+
+                responseLanguage.startsWith(
+                    "ml"
+                ) ->
+                    """
+                    The current preferred language is Malayalam.
+                    Reply in Malayalam script.
+                    Do not reply in English unless explicitly requested.
+                    """.trimIndent()
+
+                responseLanguage.startsWith(
+                    "hi"
+                ) ->
+                    """
+                    The current preferred language is Hindi.
+                    Reply in Hindi script.
+                    Do not reply in English unless explicitly requested.
+                    """.trimIndent()
+
+                responseLanguage.startsWith(
+                    "kn"
+                ) ->
+                    """
+                    The current preferred language is Kannada.
+                    Reply in Kannada script.
+                    Do not reply in English unless explicitly requested.
+                    """.trimIndent()
+
+                else ->
+                    """
+                    The current preferred language is English unless
+                    the user is speaking Tanglish.
+
+                    If the user is speaking Tanglish, interpret it
+                    as Tamil speech written in English letters and
+                    reply naturally in Tanglish.
+
+                    Otherwise reply in English.
+                    """.trimIndent()
+            }
+
+        messages.put(
+
+            JSONObject().apply {
+
+                put(
+                    "role",
+                    "system"
+                )
+
+                put(
+                    "content",
+                    languageInstruction
+                )
+            }
+        )
+
+        messages.put(
+
+            JSONObject().apply {
+
+                put(
+                    "role",
+                    "system"
+                )
+
+                put(
+                    "content",
+                    "The user's current message is: " +
+                            "do not translate it before understanding it. " +
+                            "Preserve its intended meaning, including Tanglish."
+                )
+            }
+        )
+
         messages.put(
 
             JSONObject().apply {
@@ -2626,7 +3666,10 @@ class AngelGuardAIEngine(
     fun isCurrentlyListening():
             Boolean {
 
-        return isListening.get()
+        return (
+                isListening.get() ||
+                        whisperRecorder?.isRecording() == true
+                )
     }
 
     fun isCurrentlySpeaking():
@@ -2655,14 +3698,21 @@ class AngelGuardAIEngine(
 
         conversationActive = false
 
+        wakeWordFailureCount = 0
+
         aiRequestRunning.set(false)
+
+        try {
+            whisperRecorder?.stopRecording()
+        } catch (_: Exception) {
+        }
 
         Log.d(
             TAG,
             "Emergency state reset"
         )
 
-        scheduleListeningRestart()
+        scheduleConversationRestart()
     }
 
     // =========================================================
@@ -2699,6 +3749,25 @@ class AngelGuardAIEngine(
             mainHandler.removeCallbacksAndMessages(
                 null
             )
+
+            // -------------------------------------------------
+            // WHISPER
+            // -------------------------------------------------
+
+            try {
+
+                whisperRecorder?.shutdown()
+
+            } catch (e: Exception) {
+
+                Log.e(
+                    TAG,
+                    "Error shutting down Whisper recorder",
+                    e
+                )
+            }
+
+            whisperRecorder = null
 
             // -------------------------------------------------
             // SPEECH RECOGNIZER
@@ -2747,22 +3816,6 @@ class AngelGuardAIEngine(
             try {
 
                 aiScope.cancel()
-
-            } catch (_: Exception) {
-            }
-
-            // -------------------------------------------------
-            // HTTP
-            // -------------------------------------------------
-
-            try {
-
-                client.dispatcher
-                    .executorService
-                    .shutdown()
-
-                client.connectionPool
-                    .evictAll()
 
             } catch (_: Exception) {
             }

@@ -1,7 +1,7 @@
 plugins {
     id("com.android.application")
+    id("org.jetbrains.kotlin.android")
     id("com.google.gms.google-services")
-    alias(libs.plugins.jetbrains.kotlin.android)
 }
 
 android {
@@ -15,7 +15,6 @@ android {
         versionCode = 1
         versionName = "1.0"
 
-        // Use this to pass the key from local.properties safely
         manifestPlaceholders["MAPS_API_KEY"] =
             project.findProperty("GOOGLE_MAPS_API_KEY") ?: ""
     }
@@ -35,7 +34,6 @@ android {
 }
 
 dependencies {
-
     implementation("androidx.security:security-crypto:1.1.0-alpha06")
     implementation("androidx.activity:activity-ktx:1.9.0")
     implementation("androidx.appcompat:appcompat:1.6.1")
@@ -61,9 +59,4 @@ dependencies {
 
     // Google Location
     implementation("com.google.android.gms:play-services-location:21.3.0")
-    implementation("com.squareup.okhttp3:okhttp:4.12.0")
-    implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.7.3")
-    // Firebase BoM and Analytics (Kotlin DSL)
-    implementation(platform("com.google.firebase:firebase-bom:33.10.0"))
-    implementation("com.google.firebase:firebase-analytics")
 }
